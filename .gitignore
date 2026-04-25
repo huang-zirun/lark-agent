@@ -27,7 +27,6 @@ packages/site/docs/.vitepress/cache
 *.sln
 *.sw?
 
-journey/
 apps/
 packages/utils/
 docs/个人阶段成果小结.md
