@@ -27,6 +27,7 @@
 - Ground in repo state before proposing changes for design-heavy tasks.
 - **Use `uv` for Python**: prefer `uv pip install`, `uv run`, `uv venv` over pip/conda.
 - **Use PowerShell**: all CLI operations use PowerShell syntax; avoid cmd.exe/Bash.
+- **Use Standard Git Commit**: follow conventional commits format (`type(scope): subject`) with clear, descriptive messages; keep commits atomic and focused.
 
 ## Design Principles
 
