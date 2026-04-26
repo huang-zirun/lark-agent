@@ -31,7 +31,7 @@ class ChangeSetFile(BaseModel):
     path: str
     change_type: str = Field(pattern=r"^(create|modify|delete)$")
     content: str | None = None
-    patch: str
+    patch: str | None = None
 
 
 class ChangeSet(BaseModel):
@@ -109,4 +109,13 @@ ARTIFACT_TYPE_TO_SCHEMA = {
     "test_report": TestReport,
     "review_report": ReviewReport,
     "delivery_summary": DeliverySummary,
+}
+
+OUTPUT_SCHEMA_TO_ARTIFACT_TYPE = {
+    "requirement": "requirement_brief",
+    "design": "design_spec",
+    "codepatch": "change_set",
+    "test": "test_report",
+    "review": "review_report",
+    "delivery": "delivery_summary",
 }

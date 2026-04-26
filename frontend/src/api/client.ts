@@ -90,6 +90,8 @@ export const checkpointApi = {
     api.post<CheckpointRecord>(`/checkpoints/${id}/approve`, { decision_by }),
   reject: (id: string, reason: string, decision_by: string = 'user', reject_target?: string) =>
     api.post<CheckpointRecord>(`/checkpoints/${id}/reject`, { reason, decision_by, reject_target }),
+  getPending: (runId: string) =>
+    api.get<CheckpointRecord | null>(`/pipelines/${runId}/pending-checkpoint`),
 }
 
 export const artifactApi = {

@@ -24,8 +24,11 @@ const RequirementInput: React.FC = () => {
       message.success('Pipeline created! Starting...')
       try {
         await pipelineApi.start(runId)
-      } catch {
-        // Pipeline may stop at checkpoint, which is expected
+      } catch (err: any) {
+        const isTimeout = err.code === 'ECONNABORTED' || err.message?.includes('timeout')
+        if (!isTimeout) {
+          message.error('Failed to start pipeline')
+        }
       }
       navigate(`/workspace/${runId}`)
     } catch (err) {

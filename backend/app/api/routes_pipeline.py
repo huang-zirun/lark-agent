@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+import asyncio
 
 from app.db.session import get_db
 from app.models.pipeline import PipelineRun
@@ -70,7 +71,7 @@ async def get_pipeline(run_id: str, db: AsyncSession = Depends(get_db)):
 async def start_pipeline(run_id: str, db: AsyncSession = Depends(get_db)):
     try:
         run = await start_pipeline_run(db, run_id)
-        run = await run_pipeline_stages(db, run_id, use_mock=True)
+        asyncio.create_task(run_pipeline_stages(run_id))
         return run
     except ExecutionError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -90,7 +91,7 @@ async def pause_pipeline(run_id: str, db: AsyncSession = Depends(get_db)):
 async def resume_pipeline(run_id: str, db: AsyncSession = Depends(get_db)):
     try:
         run = await resume_pipeline_run(db, run_id)
-        run = await run_pipeline_stages(db, run_id, use_mock=True)
+        asyncio.create_task(run_pipeline_stages(run_id))
         return run
     except DevFlowError as e:
         raise HTTPException(status_code=400, detail=str(e))

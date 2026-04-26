@@ -11,6 +11,11 @@ from app.schemas.artifacts import (
 )
 
 
+class CodeContext(BaseModel):
+    directory_tree: dict | None = None
+    file_contents: dict[str, str] | None = None
+
+
 class RequirementAgentInput(BaseModel):
     requirement_text: str
     workspace_meta: dict | None = None
@@ -22,7 +27,7 @@ class RequirementAgentOutput(BaseModel):
 
 class DesignAgentInput(BaseModel):
     requirement_brief: RequirementBrief
-    code_context: dict | None = None
+    code_context: CodeContext | None = None
     reject_reason: str | None = None
 
 
@@ -32,7 +37,7 @@ class DesignAgentOutput(BaseModel):
 
 class CodePatchAgentInput(BaseModel):
     design_spec: DesignSpec
-    code_context: dict | None = None
+    code_context: CodeContext | None = None
     reject_reason: str | None = None
 
 
@@ -44,6 +49,7 @@ class TestAgentInput(BaseModel):
     change_set: ChangeSet
     requirement_brief: RequirementBrief
     design_spec: DesignSpec | None = None
+    code_context: CodeContext | None = None
 
 
 class TestAgentOutput(BaseModel):

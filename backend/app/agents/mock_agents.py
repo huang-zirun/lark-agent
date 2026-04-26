@@ -1,10 +1,30 @@
+from app.schemas.artifacts import ARTIFACT_TYPE_TO_SCHEMA
+from app.shared.errors import OutputValidationError
 from app.shared.logging import get_logger
 
 logger = get_logger(__name__)
 
 
+def _validate_mock_output(output: dict) -> dict:
+    for artifact_type, artifact_data in output.items():
+        schema_cls = ARTIFACT_TYPE_TO_SCHEMA.get(artifact_type)
+        if not schema_cls:
+            continue
+        if not isinstance(artifact_data, dict):
+            raise OutputValidationError(
+                f"Mock agent output key '{artifact_type}' has non-dict value: {type(artifact_data)}"
+            )
+        try:
+            schema_cls.model_validate(artifact_data)
+        except Exception as e:
+            raise OutputValidationError(
+                f"Mock agent output validation failed for '{artifact_type}': {e}"
+            )
+    return output
+
+
 async def mock_requirement_agent(requirement_text: str, **kwargs) -> dict:
-    return {
+    return _validate_mock_output({
         "requirement_brief": {
             "schema_version": "1.0",
             "goal": f"Implement the requested feature: {requirement_text[:100]}",
@@ -28,11 +48,11 @@ async def mock_requirement_agent(requirement_text: str, **kwargs) -> dict:
             ],
             "estimated_effort": "small",
         }
-    }
+    })
 
 
 async def mock_design_agent(requirement_brief: dict, **kwargs) -> dict:
-    return {
+    return _validate_mock_output({
         "design_spec": {
             "schema_version": "1.0",
             "summary": "Add a new health check endpoint to the API",
@@ -57,11 +77,11 @@ async def mock_design_agent(requirement_brief: dict, **kwargs) -> dict:
                 {"level": "low", "description": "Minimal change, low risk"}
             ],
         }
-    }
+    })
 
 
 async def mock_code_patch_agent(design_spec: dict, **kwargs) -> dict:
-    return {
+    return _validate_mock_output({
         "change_set": {
             "schema_version": "1.0",
             "files": [
@@ -95,16 +115,16 @@ async def mock_code_patch_agent(design_spec: dict, **kwargs) -> dict:
                         '    assert "version" in data\n'
                         '    assert "time" in data\n'
                     ),
-                    "patch": "",
+                    "patch": None,
                 },
             ],
             "reasoning": "Added health check endpoint and corresponding test file",
         }
-    }
+    })
 
 
 async def mock_test_agent(change_set: dict, **kwargs) -> dict:
-    return {
+    return _validate_mock_output({
         "test_report": {
             "schema_version": "1.0",
             "exit_code": 0,
@@ -118,11 +138,11 @@ async def mock_test_agent(change_set: dict, **kwargs) -> dict:
                 "skipped": 0,
             },
         }
-    }
+    })
 
 
 async def mock_review_agent(design_spec: dict, change_set: dict, test_report: dict, **kwargs) -> dict:
-    return {
+    return _validate_mock_output({
         "review_report": {
             "schema_version": "1.0",
             "recommendation": "approve",
@@ -142,11 +162,11 @@ async def mock_review_agent(design_spec: dict, change_set: dict, test_report: di
             ],
             "summary": "The implementation is clean and correct. Minor style suggestion for documentation.",
         }
-    }
+    })
 
 
 async def mock_delivery_agent(change_set: dict, review_report: dict, test_report: dict, **kwargs) -> dict:
-    return {
+    return _validate_mock_output({
         "delivery_summary": {
             "schema_version": "1.0",
             "status": "ready",
@@ -164,7 +184,7 @@ async def mock_delivery_agent(change_set: dict, review_report: dict, test_report
                 "Verify in staging before production",
             ],
         }
-    }
+    })
 
 
 MOCK_AGENTS = {

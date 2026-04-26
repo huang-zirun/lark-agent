@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+import asyncio
 
 from app.db.session import get_db
 from app.models.checkpoint import CheckpointRecord, CheckpointStatus
@@ -34,7 +35,8 @@ async def approve_checkpoint_endpoint(
 ):
     try:
         record = await approve_checkpoint(db, checkpoint_id, decision_by=body.decision_by)
-        run = await run_pipeline_stages(db, record.run_id, use_mock=True)
+        await db.commit()
+        asyncio.create_task(run_pipeline_stages(record.run_id))
         await db.refresh(record)
         return record
     except ExecutionError as e:
@@ -57,7 +59,8 @@ async def reject_checkpoint_endpoint(
             decision_by=body.decision_by,
             reject_target_override=body.reject_target,
         )
-        run = await run_pipeline_stages(db, record.run_id, use_mock=True)
+        await db.commit()
+        asyncio.create_task(run_pipeline_stages(record.run_id))
         await db.refresh(record)
         return record
     except ExecutionError as e:

@@ -203,3 +203,158 @@ def _parse_diff_stats(stat_output: str) -> dict:
         return {"files_changed": files_changed, "insertions": insertions, "deletions": deletions}
     except (ValueError, IndexError):
         return {"files_changed": 0, "insertions": 0, "deletions": 0}
+
+
+EXCLUDED_DIRS = {
+    ".git", "__pycache__", "node_modules", ".venv", "venv",
+    ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    "dist", "build", ".eggs", "*.egg-info", ".next", ".nuxt",
+}
+
+EXCLUDED_EXTENSIONS = {
+    ".pyc", ".pyo", ".so", ".dll", ".exe", ".bin",
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
+    ".woff", ".woff2", ".ttf", ".eot",
+    ".zip", ".tar", ".gz", ".rar",
+    ".db", ".sqlite", ".sqlite3",
+}
+
+
+def get_directory_tree(
+    workspace_path: str,
+    max_depth: int = 3,
+    exclude_dirs: set[str] | None = None,
+) -> dict:
+    ws_path = Path(workspace_path)
+    if not ws_path.exists():
+        return {"root": str(ws_path), "tree": {}, "error": "workspace not found"}
+
+    excludes = exclude_dirs or EXCLUDED_DIRS
+
+    def _build_tree(path: Path, depth: int) -> dict | str:
+        if depth > max_depth:
+            return "..."
+
+        if not path.exists():
+            return ""
+
+        if path.is_file():
+            return f"[file] {path.name}"
+
+        result = {}
+        try:
+            for child in sorted(path.iterdir()):
+                if child.name in excludes:
+                    continue
+                if child.name.startswith(".") and child.name not in {".env.example", ".env"}:
+                    continue
+                if child.suffix in EXCLUDED_EXTENSIONS:
+                    continue
+                result[child.name] = _build_tree(child, depth + 1)
+        except PermissionError:
+            return "[permission denied]"
+
+        return result
+
+    tree = _build_tree(ws_path, 0)
+    return {"root": str(ws_path), "tree": tree}
+
+
+def read_file_content(
+    workspace_path: str,
+    file_path: str,
+    max_lines: int = 200,
+) -> str | None:
+    ws_path = Path(workspace_path)
+    target = ws_path / file_path
+
+    if not target.exists():
+        return None
+
+    if not target.is_file():
+        return None
+
+    try:
+        content = target.read_text(encoding="utf-8", errors="replace")
+        lines = content.split("\n")
+        if len(lines) > max_lines:
+            kept = lines[:max_lines]
+            kept.append(f"\n... [{len(lines) - max_lines} more lines truncated]")
+            return "\n".join(kept)
+        return content
+    except Exception as e:
+        logger.warning(f"Failed to read file {file_path}: {e}")
+        return None
+
+
+def get_code_context(
+    workspace_path: str,
+    affected_files: list[str] | None = None,
+    max_depth: int = 3,
+    max_file_lines: int = 200,
+) -> dict:
+    ws_path = Path(workspace_path)
+    if not ws_path.exists():
+        return {"directory_tree": None, "file_contents": None}
+
+    directory_tree = get_directory_tree(workspace_path, max_depth=max_depth)
+
+    file_contents = {}
+    if affected_files:
+        for fp in affected_files:
+            content = read_file_content(workspace_path, fp, max_lines=max_file_lines)
+            if content is not None:
+                file_contents[fp] = content
+
+    return {
+        "directory_tree": directory_tree,
+        "file_contents": file_contents if file_contents else None,
+    }
+
+
+def snapshot_workspace(workspace_path: str, message: str) -> str | None:
+    ws_path = Path(workspace_path)
+    if not ws_path.exists():
+        return None
+
+    try:
+        subprocess.run(
+            ["git", "add", "-A"],
+            capture_output=True,
+            text=True,
+            cwd=str(ws_path),
+            timeout=30,
+        )
+        result = subprocess.run(
+            ["git", "commit", "-m", f"snapshot: {message}", "--allow-empty"],
+            capture_output=True,
+            text=True,
+            cwd=str(ws_path),
+            timeout=30,
+        )
+        if result.returncode == 0:
+            return _get_current_commit(str(ws_path))
+        logger.warning(f"Snapshot commit failed: {result.stderr}")
+        return None
+    except Exception as e:
+        logger.warning(f"Snapshot failed: {e}")
+        return None
+
+
+def restore_workspace_snapshot(workspace_path: str, commit_hash: str) -> bool:
+    ws_path = Path(workspace_path)
+    if not ws_path.exists():
+        return False
+
+    try:
+        result = subprocess.run(
+            ["git", "reset", "--hard", commit_hash],
+            capture_output=True,
+            text=True,
+            cwd=str(ws_path),
+            timeout=30,
+        )
+        return result.returncode == 0
+    except Exception as e:
+        logger.warning(f"Restore snapshot failed: {e}")
+        return False

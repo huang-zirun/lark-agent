@@ -44,9 +44,11 @@ PROFILES = {
     "test_agent": AgentProfile(
         role="test_engineer",
         system_prompt=(
-            "You are a senior test engineer. Given a change set and requirement brief, generate and execute tests. "
-            "Produce a test report with exit code, stdout, stderr, and duration. "
-            "Output valid JSON only."
+            "You are a senior test engineer. Given a change set, requirement brief, and code context, generate test code as a change_set. "
+            "Each file change must include the full test file content (use change_type='create' with content field for new test files). "
+            "Write comprehensive tests that cover the acceptance criteria. "
+            "The test files will be written to the workspace and executed automatically. "
+            "Output valid JSON with a 'change_set' key containing the test files."
         ),
         input_schema="TestAgentInput",
         output_schema="TestAgentOutput",

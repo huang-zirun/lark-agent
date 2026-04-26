@@ -20,7 +20,7 @@ STAGE_TRANSITIONS = {
     StageRunStatus.SUCCEEDED: [],
     StageRunStatus.FAILED: [StageRunStatus.RETRYING],
     StageRunStatus.SKIPPED: [],
-    StageRunStatus.RETRYING: [StageRunStatus.RUNNING, StageRunStatus.FAILED],
+    StageRunStatus.RETRYING: [StageRunStatus.RUNNING, StageRunStatus.PENDING, StageRunStatus.FAILED],
 }
 
 

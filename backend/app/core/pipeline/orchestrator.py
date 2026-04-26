@@ -132,6 +132,17 @@ async def handle_stage_success(session: AsyncSession, run_id: str, stage_key: st
             run.status = PipelineRunStateMachine.transition(run.status, PipelineRunStatus.WAITING_CHECKPOINT)
             run.current_stage_key = next_stage_key
             await _create_checkpoint_record(session, run_id, next_stage_def)
+            result = await session.execute(
+                select(StageRun).where(
+                    StageRun.run_id == run_id,
+                    StageRun.stage_key == next_stage_key,
+                )
+            )
+            checkpoint_stage_run = result.scalars().first()
+            if checkpoint_stage_run:
+                if checkpoint_stage_run.status in (StageRunStatus.FAILED, StageRunStatus.RETRYING):
+                    checkpoint_stage_run.status = StageRunStatus.PENDING
+                checkpoint_stage_run.status = StageRunStateMachine.transition(checkpoint_stage_run.status, StageRunStatus.RUNNING)
             logger.info(f"PipelineRun {run_id} waiting for checkpoint: {next_stage_key}")
         else:
             run.current_stage_key = next_stage_key
@@ -140,10 +151,10 @@ async def handle_stage_success(session: AsyncSession, run_id: str, stage_key: st
     await session.flush()
 
 
-async def handle_stage_failure(session: AsyncSession, run_id: str, stage_key: str, error_message: str):
+async def handle_stage_failure(session: AsyncSession, run_id: str, stage_key: str, error_message: str) -> bool:
     run = await session.get(PipelineRun, run_id)
     if not run:
-        return
+        return False
 
     result = await session.execute(
         select(StageRun).where(
@@ -156,11 +167,13 @@ async def handle_stage_failure(session: AsyncSession, run_id: str, stage_key: st
     if stage_run and stage_run.attempt < 3:
         new_status = StageRunStateMachine.transition(stage_run.status, StageRunStatus.RETRYING)
         stage_run.status = new_status
-        new_status = StageRunStateMachine.transition(stage_run.status, StageRunStatus.RUNNING)
+        new_status = StageRunStateMachine.transition(stage_run.status, StageRunStatus.PENDING)
         stage_run.status = new_status
         stage_run.attempt += 1
         stage_run.error_message = error_message
         logger.info(f"StageRun {stage_key} retrying (attempt {stage_run.attempt})")
+        await session.flush()
+        return True
     else:
         run.status = PipelineRunStateMachine.transition(run.status, PipelineRunStatus.FAILED)
         run.ended_at = datetime.now(timezone.utc)
@@ -169,8 +182,8 @@ async def handle_stage_failure(session: AsyncSession, run_id: str, stage_key: st
             stage_run.status = StageRunStatus.FAILED
             stage_run.error_message = error_message
         logger.error(f"PipelineRun {run_id} failed at stage {stage_key}: {error_message}")
-
-    await session.flush()
+        await session.flush()
+        return False
 
 
 async def _create_checkpoint_record(session: AsyncSession, run_id: str, stage_def: StageDefinition):

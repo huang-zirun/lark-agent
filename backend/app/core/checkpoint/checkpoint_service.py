@@ -6,7 +6,7 @@ from sqlalchemy import select
 from app.models.checkpoint import CheckpointRecord, CheckpointStatus
 from app.models.pipeline import PipelineRun, PipelineRunStatus
 from app.models.stage import StageRun, StageRunStatus
-from app.core.pipeline.state_machine import PipelineRunStateMachine
+from app.core.pipeline.state_machine import PipelineRunStateMachine, StageRunStateMachine
 from app.core.pipeline.template_loader import get_stage_definition_by_key, DEFAULT_TEMPLATE_ID
 from app.shared.errors import ExecutionError
 from app.shared.logging import get_logger
@@ -61,6 +61,16 @@ async def approve_checkpoint(
         run.status = new_status
         run.current_stage_key = approve_target
 
+        result = await session.execute(
+            select(StageRun).where(
+                StageRun.run_id == run.id,
+                StageRun.stage_key == record.stage_key,
+            )
+        )
+        checkpoint_stage_run = result.scalars().first()
+        if checkpoint_stage_run:
+            checkpoint_stage_run.status = StageRunStateMachine.transition(checkpoint_stage_run.status, StageRunStatus.SUCCEEDED)
+
     await session.flush()
     logger.info(f"Checkpoint {checkpoint_id} approved, next stage: {approve_target}")
     return record
@@ -96,6 +106,16 @@ async def reject_checkpoint(
         new_status = PipelineRunStateMachine.transition(run.status, PipelineRunStatus.RUNNING)
         run.status = new_status
         run.current_stage_key = reject_target
+
+        result = await session.execute(
+            select(StageRun).where(
+                StageRun.run_id == run.id,
+                StageRun.stage_key == record.stage_key,
+            )
+        )
+        checkpoint_stage_run = result.scalars().first()
+        if checkpoint_stage_run:
+            checkpoint_stage_run.status = StageRunStateMachine.transition(checkpoint_stage_run.status, StageRunStatus.FAILED)
 
         result = await session.execute(
             select(StageRun).where(

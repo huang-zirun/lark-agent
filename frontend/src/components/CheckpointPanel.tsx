@@ -31,8 +31,8 @@ const CheckpointPanel: React.FC<CheckpointPanelProps> = ({ checkpoint, artifacts
       await checkpointApi.approve(checkpoint.id)
       message.success('Approved! Pipeline will continue.')
       onAction()
-    } catch {
-      message.error('Failed to approve')
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || 'Failed to approve')
     } finally {
       setLoading(false)
     }
@@ -48,8 +48,8 @@ const CheckpointPanel: React.FC<CheckpointPanelProps> = ({ checkpoint, artifacts
       await checkpointApi.reject(checkpoint.id, rejectReason.trim())
       message.info('Rejected. Pipeline will rollback.')
       onAction()
-    } catch {
-      message.error('Failed to reject')
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || 'Failed to reject')
     } finally {
       setLoading(false)
     }

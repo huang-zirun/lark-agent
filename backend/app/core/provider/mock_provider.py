@@ -4,6 +4,9 @@ logger = get_logger(__name__)
 
 
 class MockProvider:
+    def __init__(self):
+        self._last_usage: dict | None = None
+
     async def generate(
         self,
         prompt: str,
@@ -11,6 +14,11 @@ class MockProvider:
         system_prompt: str | None = None,
     ) -> dict | str:
         logger.info("MockProvider.generate called")
+        self._last_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
         if schema:
             return self._generate_from_schema(schema)
         return "Mock response"

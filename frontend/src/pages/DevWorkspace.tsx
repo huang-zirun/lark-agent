@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Button, Card, Col, Row, Space, Spin, Typography, message } from 'antd'
 import { ArrowLeftOutlined, ReloadOutlined, PauseOutlined, StopOutlined } from '@ant-design/icons'
-import { pipelineApi, artifactApi, type PipelineRun, type StageRun, type ArtifactItem } from '../api/client'
+import { pipelineApi, artifactApi, checkpointApi, type PipelineRun, type StageRun, type ArtifactItem, type CheckpointRecord } from '../api/client'
 import RunTimeline from '../components/RunTimeline'
 import RunMetricsCard from '../components/RunMetricsCard'
 import CheckpointPanel from '../components/CheckpointPanel'
@@ -16,6 +16,7 @@ const DevWorkspace: React.FC = () => {
   const [run, setRun] = useState<PipelineRun | null>(null)
   const [stages, setStages] = useState<StageRun[]>([])
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([])
+  const [pendingCheckpoint, setPendingCheckpoint] = useState<CheckpointRecord | null>(null)
   const [loading, setLoading] = useState(true)
 
   const fetchData = useCallback(async () => {
@@ -29,6 +30,12 @@ const DevWorkspace: React.FC = () => {
       setRun(runRes.data)
       setStages(timelineRes.data.stages)
       setArtifacts(artifactsRes.data as ArtifactItem[])
+      try {
+        const checkpointRes = await checkpointApi.getPending(runId)
+        setPendingCheckpoint(checkpointRes.data)
+      } catch {
+        message.error('Failed to load checkpoint data')
+      }
     } catch {
       message.error('Failed to load pipeline data')
     } finally {
@@ -45,10 +52,6 @@ const DevWorkspace: React.FC = () => {
     }, 3000)
     return () => clearInterval(interval)
   }, [fetchData, run?.status])
-
-  const pendingCheckpoint = stages
-    .filter((s) => s.stage_key.startsWith('checkpoint_'))
-    .find((s) => s.status === 'running' || s.status === 'pending')
 
   const checkpointArtifacts = pendingCheckpoint
     ? artifacts.filter((a) =>
@@ -124,14 +127,7 @@ const DevWorkspace: React.FC = () => {
         <Col span={14}>
           {run.status === 'waiting_checkpoint' && pendingCheckpoint && (
             <CheckpointPanel
-              checkpoint={{
-                id: pendingCheckpoint.id,
-                run_id: run.id,
-                stage_key: pendingCheckpoint.stage_key,
-                checkpoint_type: pendingCheckpoint.stage_key === 'checkpoint_design_approval' ? 'design_approval' : 'final_approval',
-                status: 'pending',
-                reason: null,
-              }}
+              checkpoint={pendingCheckpoint}
               artifacts={checkpointArtifacts}
               onAction={fetchData}
             />
