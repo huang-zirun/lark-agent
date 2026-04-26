@@ -30,3 +30,27 @@ packages/site/docs/.vitepress/cache
 apps/
 packages/utils/
 docs/个人阶段成果小结.md
+backup/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+dist/
+build/
+
+# Data
+data/
+*.db
+*.sqlite
+
+# Environment
+.env
+.env.local
