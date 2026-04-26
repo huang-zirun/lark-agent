@@ -1,0 +1,15 @@
+- [x] `routes_checkpoint.py` 中 approve 端点不再传递 `use_mock` 参数，调用签名为 `run_pipeline_stages(db, record.run_id)`
+- [x] `routes_checkpoint.py` 中 reject 端点不再传递 `use_mock` 参数，调用签名为 `run_pipeline_stages(db, record.run_id)`
+- [x] `runner.py:_validate_and_fix_output` 返回值仅包含 `ARTIFACT_TYPE_TO_SCHEMA` 中注册的 key
+- [x] `runner.py:run_agent` 返回的 dict 中所有值均为 dict 类型（无非 artifact 字符串值）
+- [x] `stage_runner.py` 中不再有 `isinstance(artifact_data, dict)` 的 ad-hoc 检查
+- [x] `stage_runner.py` 中 schema 验证失败时，artifact 不被保存且记录 error 日志
+- [x] `stage_runner.py` 中未注册 artifact_type 时，artifact 不被保存且记录 warning 日志
+- [x] `artifacts.py` 中新增 `OUTPUT_SCHEMA_TO_ARTIFACT_TYPE` 映射表
+- [x] `runner.py:_get_output_schema` 使用映射表而非 if/elif 链
+- [x] `ChangeSetFile.patch` 字段类型为 `str | None = None`
+- [x] `stage_runner.py:_execute_test_stage` 中 `apply_patch` 调用前检查 `patch is not None`
+- [x] `mock_agents.py` 中 `mock_code_patch_agent` 的 test_health.py 条目 `patch` 值为 `None`
+- [x] `mock_agents.py` 中所有 mock agent 返回值经过 schema 验证
+- [x] Checkpoint approve 端点可正常调用，Pipeline 从 checkpoint 恢复执行
+- [x] Checkpoint reject 端点可正常调用，Pipeline 回退到 reject_target 阶段

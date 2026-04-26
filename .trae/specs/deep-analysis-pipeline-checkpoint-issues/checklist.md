@@ -1,0 +1,20 @@
+- [x] `routes_checkpoint.py` 中 approve 端点调用 `approve_checkpoint` 后立即返回，不再同步调用 `run_pipeline_stages`
+- [x] `routes_checkpoint.py` 中 reject 端点调用 `reject_checkpoint` 后立即返回，不再同步调用 `run_pipeline_stages`
+- [x] `routes_pipeline.py` 中 start 端点调用 `start_pipeline_run` 后立即返回，不再同步调用 `run_pipeline_stages`
+- [x] `routes_pipeline.py` 中 resume 端点调用 `resume_pipeline_run` 后立即返回，不再同步调用 `run_pipeline_stages`
+- [x] 后台任务使用独立的数据库 session，不与请求 session 共享
+- [x] `run_pipeline_stages` 中每个阶段执行完成后调用 `session.commit()`，前端轮询可见中间状态
+- [x] checkpoint StageRun 在 pipeline 到达检查点时状态更新为 RUNNING
+- [x] checkpoint StageRun 在 approve 后状态更新为 SUCCEEDED
+- [x] checkpoint StageRun 在 reject 后状态更新为 FAILED
+- [x] StageRunStateMachine 支持 PENDING→RUNNING 和 RUNNING→SUCCEEDED/FAILED 转换（含 RETRYING→PENDING）
+- [x] 阶段失败且 attempt < 3 时，`run_pipeline_stages` 循环继续执行该阶段而非 break
+- [x] 阶段失败且 attempt >= 3 时，PipelineRun 状态更新为 failed，StageRun 状态更新为 failed
+- [x] 前端 `DevWorkspace.tsx` 中 `checkpointArtifacts` 计算基于 `pendingCheckpoint.stage_key` 而非 StageRun 状态
+- [x] 前端 `DevWorkspace.tsx` 中 `checkpointApi.getPending` 失败时显示错误提示
+- [x] 前端 `RequirementInput.tsx` 中 `pipelineApi.start` 真实错误展示给用户
+- [x] 前端 `CheckpointPanel.tsx` 中 approve/reject 失败时展示具体错误信息
+- [x] 不通过 API 调用的端到端验证脚本可跑通完整 pipeline 流程
+- [x] 验证 checkpoint approve 后 pipeline 正确推进到 approve_target 阶段
+- [x] 验证 checkpoint reject 后 pipeline 正确回退到 reject_target 阶段
+- [x] 验证阶段重试机制在失败时正确工作（自动重试，重试耗尽后 failed）
