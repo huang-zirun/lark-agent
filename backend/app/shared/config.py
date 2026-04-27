@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     OPENAI_DEFAULT_MODEL: str = "gpt-4o"
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_DEFAULT_MODEL: str = "claude-sonnet-4-20250514"
+    FEISHU_WEBHOOK_URL: str = ""
 
     LLM_TIMEOUT_SECONDS: int = 120
     LLM_MAX_RETRIES: int = 3

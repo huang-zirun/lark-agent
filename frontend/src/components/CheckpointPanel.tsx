@@ -1,23 +1,21 @@
 import React, { useState } from 'react'
 import { Card, Button, Input, Space, Typography, Tag, Descriptions, message } from 'antd'
 import { CheckOutlined, CloseOutlined } from '@ant-design/icons'
-import { checkpointApi } from '../api/client'
+import { checkpointApi, type ArtifactItem } from '../api/client'
 
 const { Title, Paragraph } = Typography
 const { TextArea } = Input
 
-interface CheckpointRecord {
-  id: string
-  run_id: string
-  stage_key: string
-  checkpoint_type: string
-  status: string
-  reason: string | null
-}
-
 interface CheckpointPanelProps {
-  checkpoint: CheckpointRecord
-  artifacts: Record<string, unknown>[]
+  checkpoint: {
+    id: string
+    run_id: string
+    stage_key: string
+    checkpoint_type: string
+    status: string
+    reason: string | null
+  }
+  artifacts: ArtifactItem[]
   onAction: () => void
 }
 

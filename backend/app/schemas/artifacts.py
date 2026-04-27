@@ -101,6 +101,18 @@ class DeliverySummary(BaseModel):
     next_steps: list[str]
 
 
+class DeliveryManifest(BaseModel):
+    schema_version: str = "1.0"
+    commit_hash: str | None = None
+    branch_name: str | None = None
+    changed_files: list[str] = Field(default_factory=list)
+    diff_stats: DiffStats = Field(default_factory=DiffStats)
+    has_changes: bool = False
+    artifacts: list[str] = Field(default_factory=list)
+    delivery_summary_ref: str | None = None
+    error: str | None = None
+
+
 ARTIFACT_TYPE_TO_SCHEMA = {
     "requirement_brief": RequirementBrief,
     "design_spec": DesignSpec,
@@ -109,6 +121,7 @@ ARTIFACT_TYPE_TO_SCHEMA = {
     "test_report": TestReport,
     "review_report": ReviewReport,
     "delivery_summary": DeliverySummary,
+    "delivery_manifest": DeliveryManifest,
 }
 
 OUTPUT_SCHEMA_TO_ARTIFACT_TYPE = {
@@ -119,4 +132,5 @@ OUTPUT_SCHEMA_TO_ARTIFACT_TYPE = {
     "test": "test_report",
     "review": "review_report",
     "delivery": "delivery_summary",
+    "deliverymanifest": "delivery_manifest",
 }

@@ -125,6 +125,38 @@ async def handle_stage_success(session: AsyncSession, run_id: str, stage_key: st
         run.status = PipelineRunStateMachine.transition(run.status, PipelineRunStatus.SUCCEEDED)
         run.ended_at = datetime.now(timezone.utc)
         run.current_stage_key = stage_key
+        if run.workspace_ref_id:
+            try:
+                from app.core.workspace.workspace_manager import archive_workspace
+                await archive_workspace(session, run.workspace_ref_id)
+                logger.info(f"Workspace {run.workspace_ref_id} archived after pipeline success")
+            except Exception as e:
+                logger.warning(f"Failed to archive workspace after pipeline success: {e}")
+        try:
+            from app.shared.config import settings
+            from app.core.notification.feishu_notifier import send_delivery_notification
+            if settings.FEISHU_WEBHOOK_URL:
+                from app.core.artifact.artifact_service import load_artifact
+                from app.models.artifact import Artifact as ArtifactModel
+                delivery_info = {"goal": run.requirement_text[:80] if run.requirement_text else "N/A"}
+                artifact_result = await session.execute(
+                    select(ArtifactModel).where(
+                        ArtifactModel.run_id == run_id,
+                        ArtifactModel.artifact_type.in_(["delivery_manifest", "delivery_summary", "test_report"]),
+                    )
+                )
+                for art in artifact_result.scalars().all():
+                    data = await load_artifact(session, art.id)
+                    if art.artifact_type == "delivery_manifest" and data:
+                        delivery_info.update(data)
+                    elif art.artifact_type == "test_report" and data:
+                        summary = data.get("summary", {})
+                        delivery_info["test_summary"] = f"passed={summary.get('passed', 0)}, failed={summary.get('failed', 0)}"
+                    elif art.artifact_type == "delivery_summary" and data:
+                        delivery_info["delivery_status"] = data.get("status", "unknown")
+                await send_delivery_notification(settings.FEISHU_WEBHOOK_URL, delivery_info)
+        except Exception as e:
+            logger.warning(f"Failed to send Feishu delivery notification: {e}")
         logger.info(f"PipelineRun {run_id} completed successfully")
     else:
         next_stage_def = await get_stage_definition_by_key(session, DEFAULT_TEMPLATE_ID, next_stage_key)
@@ -178,6 +210,13 @@ async def handle_stage_failure(session: AsyncSession, run_id: str, stage_key: st
         run.status = PipelineRunStateMachine.transition(run.status, PipelineRunStatus.FAILED)
         run.ended_at = datetime.now(timezone.utc)
         run.failure_reason = f"Stage {stage_key} failed: {error_message}"
+        if run.workspace_ref_id:
+            try:
+                from app.core.workspace.workspace_manager import archive_workspace
+                await archive_workspace(session, run.workspace_ref_id)
+                logger.info(f"Workspace {run.workspace_ref_id} archived after pipeline failure")
+            except Exception as e:
+                logger.warning(f"Failed to archive workspace after pipeline failure: {e}")
         if stage_run:
             stage_run.status = StageRunStatus.FAILED
             stage_run.error_message = error_message

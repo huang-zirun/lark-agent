@@ -81,6 +81,64 @@ async def execute_stage(
             )
             output_artifact_refs[artifact_type] = artifact.id
 
+        if stage_key == "code_generation" and run.workspace_ref_id:
+            from app.models.workspace import Workspace
+            from app.core.workspace.patch_applier import generate_diff
+            workspace = await session.get(Workspace, run.workspace_ref_id)
+            if workspace and workspace.workspace_path:
+                try:
+                    diff_result = await generate_diff(workspace.workspace_path)
+                    diff_artifact = await save_artifact(
+                        session=session,
+                        run_id=run_id,
+                        stage_run_id=stage_run.id,
+                        artifact_type="diff_manifest",
+                        data=diff_result,
+                        stage_key=stage_key,
+                    )
+                    output_artifact_refs["diff_manifest"] = diff_artifact.id
+                except Exception as e:
+                    logger.warning(f"Failed to generate diff_manifest: {e}")
+
+        if stage_key == "delivery_integration" and run.workspace_ref_id:
+            from app.core.workspace.delivery_service import execute_delivery
+            from app.models.workspace import Workspace
+            workspace = await session.get(Workspace, run.workspace_ref_id)
+            if workspace and workspace.workspace_path:
+                goal_summary = ""
+                req_brief_data = await _get_artifact_data(session, run.id, "requirement_brief")
+                if req_brief_data and isinstance(req_brief_data, dict):
+                    goal_summary = req_brief_data.get("goal", "")[:80]
+                try:
+                    delivery_result = await execute_delivery(
+                        workspace_path=workspace.workspace_path,
+                        run_id=run_id,
+                        goal_summary=goal_summary,
+                    )
+                    delivery_summary_id = output_artifact_refs.get("delivery_summary")
+                    delivery_manifest_data = {
+                        "schema_version": "1.0",
+                        "commit_hash": delivery_result.get("commit_hash"),
+                        "branch_name": delivery_result.get("branch_name"),
+                        "changed_files": delivery_result.get("changed_files", []),
+                        "diff_stats": delivery_result.get("diff_stats", {}),
+                        "has_changes": delivery_result.get("has_changes", False),
+                        "artifacts": list(output_artifact_refs.values()),
+                        "delivery_summary_ref": delivery_summary_id,
+                        "error": delivery_result.get("error"),
+                    }
+                    dm_artifact = await save_artifact(
+                        session=session,
+                        run_id=run_id,
+                        stage_run_id=stage_run.id,
+                        artifact_type="delivery_manifest",
+                        data=delivery_manifest_data,
+                        stage_key=stage_key,
+                    )
+                    output_artifact_refs["delivery_manifest"] = dm_artifact.id
+                except Exception as e:
+                    logger.warning(f"Failed to execute delivery operations: {e}")
+
         stage_run.status = StageRunStatus.SUCCEEDED
         stage_run.output_artifact_refs = output_artifact_refs
         stage_run.ended_at = datetime.now(timezone.utc)
@@ -94,6 +152,19 @@ async def execute_stage(
         stage_run.ended_at = datetime.now(timezone.utc)
         await session.flush()
         raise ExecutionError(f"Stage {stage_key} execution failed: {str(e)}")
+
+
+async def _get_artifact_data(session: AsyncSession, run_id: str, artifact_type: str) -> dict | None:
+    result = await session.execute(
+        select(Artifact).where(
+            Artifact.run_id == run_id,
+            Artifact.artifact_type == artifact_type,
+        ).order_by(Artifact.created_at.desc())
+    )
+    artifact = result.scalars().first()
+    if not artifact:
+        return None
+    return await load_artifact(session, artifact.id)
 
 
 async def _assemble_input(session: AsyncSession, run: PipelineRun, stage_key: str) -> dict:
@@ -157,6 +228,14 @@ async def _assemble_input(session: AsyncSession, run: PipelineRun, stage_key: st
             input_data["review_report"] = artifact_map["review_report"]
         if "test_report" in artifact_map:
             input_data["test_report"] = artifact_map["test_report"]
+        if "requirement_brief" in artifact_map:
+            input_data["requirement_brief"] = artifact_map["requirement_brief"]
+        from app.models.workspace import Workspace
+        if run.workspace_ref_id:
+            ws = await session.get(Workspace, run.workspace_ref_id)
+            if ws:
+                input_data["workspace_path"] = ws.workspace_path
+                input_data["run_id"] = run.id
 
     return input_data
 

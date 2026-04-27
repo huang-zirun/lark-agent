@@ -47,9 +47,11 @@ from app.api.routes_checkpoint import router as checkpoint_router
 from app.api.routes_artifact import router as artifact_router
 from app.api.routes_workspace import router as workspace_router
 from app.api.routes_provider import router as provider_router
+from app.api.routes_delivery import router as delivery_router
 
 app.include_router(pipeline_router, prefix="/api", tags=["Pipeline"])
 app.include_router(checkpoint_router, prefix="/api", tags=["Checkpoint"])
 app.include_router(artifact_router, prefix="/api", tags=["Artifact"])
 app.include_router(workspace_router, prefix="/api", tags=["Workspace"])
 app.include_router(provider_router, prefix="/api", tags=["Provider"])
+app.include_router(delivery_router, prefix="/api", tags=["Delivery"])

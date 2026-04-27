@@ -2,11 +2,12 @@ import React, { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Button, Card, Col, Row, Space, Spin, Typography, message } from 'antd'
 import { ArrowLeftOutlined, ReloadOutlined, PauseOutlined, StopOutlined } from '@ant-design/icons'
-import { pipelineApi, artifactApi, checkpointApi, type PipelineRun, type StageRun, type ArtifactItem, type CheckpointRecord } from '../api/client'
+import { pipelineApi, artifactApi, checkpointApi, deliveryApi, type PipelineRun, type StageRun, type ArtifactItem, type CheckpointRecord, type DeliveryInfo } from '../api/client'
 import RunTimeline from '../components/RunTimeline'
 import RunMetricsCard from '../components/RunMetricsCard'
 import CheckpointPanel from '../components/CheckpointPanel'
 import ArtifactViewer from '../components/ArtifactViewer'
+import DeliveryPanel from '../components/DeliveryPanel'
 
 const { Title, Paragraph } = Typography
 
@@ -17,6 +18,7 @@ const DevWorkspace: React.FC = () => {
   const [stages, setStages] = useState<StageRun[]>([])
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([])
   const [pendingCheckpoint, setPendingCheckpoint] = useState<CheckpointRecord | null>(null)
+  const [deliveryInfo, setDeliveryInfo] = useState<DeliveryInfo | null>(null)
   const [loading, setLoading] = useState(true)
 
   const fetchData = useCallback(async () => {
@@ -35,6 +37,14 @@ const DevWorkspace: React.FC = () => {
         setPendingCheckpoint(checkpointRes.data)
       } catch {
         message.error('Failed to load checkpoint data')
+      }
+      if (runRes.data.status === 'succeeded' || runRes.data.status === 'failed') {
+        try {
+          const deliveryRes = await deliveryApi.get(runId)
+          setDeliveryInfo(deliveryRes.data)
+        } catch {
+          // Delivery info may not be available yet
+        }
       }
     } catch {
       message.error('Failed to load pipeline data')
@@ -131,6 +141,10 @@ const DevWorkspace: React.FC = () => {
               artifacts={checkpointArtifacts}
               onAction={fetchData}
             />
+          )}
+
+          {(run.status === 'succeeded' || run.status === 'failed') && deliveryInfo && (
+            <DeliveryPanel runId={run.id} deliveryInfo={deliveryInfo} onRefresh={fetchData} />
           )}
 
           <Card title="Artifacts" style={{ marginBottom: 16 }}>

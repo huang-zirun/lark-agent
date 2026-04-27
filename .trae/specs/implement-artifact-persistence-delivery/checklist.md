@@ -1,0 +1,34 @@
+- [x] `DeliveryManifest` Pydantic model 已定义，包含 commit_hash、branch_name、changed_files、diff_stats、has_changes、artifacts、delivery_summary_ref 字段
+- [x] `ARTIFACT_TYPE_TO_SCHEMA` 映射表包含 `delivery_manifest` → `DeliveryManifest` 条目
+- [x] `OUTPUT_SCHEMA_TO_ARTIFACT_TYPE` 映射表包含 `deliverymanifest` → `delivery_manifest` 条目
+- [x] `delivery_agent` profile 的 output_schema 已更新为包含 delivery_summary + delivery_manifest — delivery_manifest 为程序化生成，无需修改 agent profile
+- [x] `delivery_service.py` 已创建，包含 `commit_delivery_changes()` 函数
+- [x] `commit_delivery_changes()` 使用 `run_git()` 执行 `git add -A` + `git commit -m "feat: {goal_summary}"`
+- [x] `commit_delivery_changes()` 使用 DevFlow 身份隔离（GIT_AUTHOR_NAME=devflow 等）— 通过 run_git() 自动注入
+- [x] `delivery_service.py` 包含 `create_delivery_branch()` 函数，创建 `devflow/{run_id[:12]}` 分支
+- [x] `delivery_service.py` 包含 `generate_delivery_diff()` 函数
+- [x] `delivery_service.py` 包含 `execute_delivery()` 编排函数，best-effort 语义
+- [x] `stage_runner.py` 中 `delivery_integration` 阶段调用 `DeliveryService.execute_delivery()`
+- [x] `stage_runner.py` 中 `delivery_integration` 阶段生成 `delivery_manifest` artifact
+- [x] `stage_runner.py` 中 `_assemble_input` 为 `delivery_integration` 添加 workspace 信息和 requirement_brief
+- [x] `stage_runner.py` 中 `code_generation` 阶段完成后生成 `diff_manifest` artifact
+- [x] `diff_manifest` artifact 包含 base_commit、changed_files、stats 字段
+- [x] `orchestrator.py` 中 PipelineRun 状态变为 succeeded 时自动归档 workspace
+- [x] `orchestrator.py` 中 PipelineRun 状态变为 failed 时自动归档 workspace
+- [x] workspace 归档操作为 best-effort，失败仅记录 warning 日志
+- [x] `routes_delivery.py` 已创建，包含 `GET /api/pipelines/{id}/delivery` 端点
+- [x] `routes_delivery.py` 包含 `GET /api/pipelines/{id}/delivery/patch` 端点，返回 unified diff
+- [x] `routes_delivery.py` 包含 `POST /api/pipelines/{id}/delivery/push` 端点
+- [x] `routes_delivery.py` 包含 `POST /api/pipelines/{id}/delivery/pr` 端点
+- [x] `main.py` 中已注册 delivery 路由
+- [x] `config.py` 中已添加 `FEISHU_WEBHOOK_URL` 配置项
+- [x] `feishu_notifier.py` 已创建，实现飞书卡片消息发送
+- [x] Pipeline 完成后自动发送飞书通知（Webhook 配置时）
+- [x] 飞书 Webhook 未配置时跳过通知，记录 info 日志
+- [x] Pipeline 完成后 workspace 中存在交付 commit，commit message 格式为 `feat: {goal_summary}` — 通过 DeliveryService 实现
+- [x] Feature branch `devflow/{run_id[:12]}` 已创建且包含交付 commit — 通过 DeliveryService 实现
+- [x] `diff_manifest` artifact 在 code_generation 阶段后正确生成
+- [x] `delivery_manifest` artifact 包含 commit_hash、branch_name、changed_files 等字段
+- [x] `GET /api/pipelines/{id}/delivery` 返回正确的交付信息
+- [x] `GET /api/pipelines/{id}/delivery/patch` 返回有效的 unified diff
+- [x] Pipeline 完成后 workspace 状态为 `archived`

@@ -1,13 +1,9 @@
 import React from 'react'
 import { Card, Collapse, Tag } from 'antd'
+import type { ArtifactItem } from '../api/client'
 
 interface ArtifactViewerProps {
-  artifacts: {
-    id: string
-    artifact_type: string
-    content_summary: string | null
-    data: Record<string, unknown> | null
-  }[]
+  artifacts: ArtifactItem[]
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -18,6 +14,7 @@ const TYPE_COLORS: Record<string, string> = {
   test_report: 'orange',
   review_report: 'magenta',
   delivery_summary: 'gold',
+  delivery_manifest: 'green',
 }
 
 const ArtifactViewer: React.FC<ArtifactViewerProps> = ({ artifacts }) => {

@@ -123,4 +123,38 @@ export const providerApi = {
     api.post(`/providers/${id}/validate`),
 }
 
+export interface DeliveryInfo {
+  run_id: string
+  delivery_manifest: {
+    commit_hash: string | null
+    branch_name: string | null
+    changed_files: string[]
+    diff_stats: {
+      files_changed: number
+      insertions: number
+      deletions: number
+    }
+    has_changes: boolean
+    error: string | null
+  } | null
+  delivery_summary: {
+    status: string
+    deliverables: string[]
+    test_summary: string
+    known_risks: string[]
+    next_steps: string[]
+  } | null
+}
+
+export const deliveryApi = {
+  get: (runId: string) =>
+    api.get<DeliveryInfo>(`/pipelines/${runId}/delivery`),
+  getPatch: (runId: string) =>
+    api.get(`/pipelines/${runId}/delivery/patch`, { responseType: 'blob' }),
+  push: (runId: string, data: { remote_url: string; remote_branch?: string }) =>
+    api.post<{ success: boolean; remote_url?: string; branch?: string; error?: string }>(`/pipelines/${runId}/delivery/push`, data),
+  createPR: (runId: string, data: { repo_owner: string; repo_name: string; base_branch?: string; github_token?: string }) =>
+    api.post<{ success: boolean; pr_url?: string; error?: string }>(`/pipelines/${runId}/delivery/pr`, data),
+}
+
 export default api
