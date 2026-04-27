@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = True
 
+    PORT: int = 19999
+
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/devflow.db"
     ARTIFACT_STORAGE_PATH: str = "./data/artifacts"
     WORKSPACE_ROOT_PATH: str = "./data/workspaces"

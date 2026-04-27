@@ -1,7 +1,5 @@
 # DevFlow Engine
 
-飞书 AI 校园挑战赛参赛作品 - AI 驱动的需求交付流程引擎
-
 ## 项目概述
 
 DevFlow Engine 是一个 AI 驱动的需求到代码交付流程引擎，通过自动化 Pipeline 将自然语言需求转换为可交付的代码变更。
