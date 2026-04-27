@@ -115,6 +115,7 @@ OUTPUT_SCHEMA_TO_ARTIFACT_TYPE = {
     "requirement": "requirement_brief",
     "design": "design_spec",
     "codepatch": "change_set",
+    "testchange": "change_set",
     "test": "test_report",
     "review": "review_report",
     "delivery": "delivery_summary",

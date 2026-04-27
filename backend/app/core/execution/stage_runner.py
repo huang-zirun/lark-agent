@@ -12,8 +12,6 @@ from app.core.pipeline.template_loader import DEFAULT_TEMPLATE_ID, get_stage_def
 from app.core.artifact.artifact_service import save_artifact, load_artifact, list_artifacts_by_run
 from app.core.checkpoint.checkpoint_service import get_pending_checkpoint
 from app.core.provider.provider_registry import resolve_provider
-from app.core.provider.mock_provider import MockProvider
-from app.agents.mock_agents import MOCK_AGENTS
 from app.schemas.artifacts import ARTIFACT_TYPE_TO_SCHEMA
 from app.shared.errors import ExecutionError
 from app.shared.logging import get_logger
@@ -51,12 +49,9 @@ async def execute_stage(
 
         snapshot_commit = await _snapshot_before_stage(session, run, stage_key)
 
-        provider = await resolve_provider(session, provider_id=stage_run.resolved_provider_id)
-        is_mock = isinstance(provider, MockProvider)
+        await resolve_provider(session, provider_id=stage_run.resolved_provider_id)
 
-        if is_mock and agent_profile_id in MOCK_AGENTS:
-            agent_result = await MOCK_AGENTS[agent_profile_id](**input_data)
-        elif stage_key == "test_generation_and_execution" and not is_mock:
+        if stage_key == "test_generation_and_execution":
             agent_result = await _execute_test_stage(session, run, input_data, stage_run)
         else:
             from app.agents.runner import run_agent
@@ -212,7 +207,7 @@ async def _execute_test_stage(
     stage_run,
 ) -> dict:
     from app.agents.runner import run_agent
-    from app.core.workspace.workspace_manager import Workspace
+    from app.models.workspace import Workspace
     from app.core.workspace.patch_applier import apply_patch
     from app.core.workspace.command_runner import run_command
     from app.shared.config import settings
@@ -230,19 +225,29 @@ async def _execute_test_stage(
     if "code_context" in input_data:
         test_gen_input["code_context"] = input_data["code_context"]
 
+    logger.info(f"test_generation_and_execution: calling test_agent with provider_id={stage_run.resolved_provider_id}")
+
     test_change_set_result = await run_agent(
         session, "test_agent", test_gen_input, provider_id=stage_run.resolved_provider_id
     )
 
-    test_artifact_refs = {}
-    test_change_set = test_change_set_result.get("test_change_set") or test_change_set_result.get("change_set")
+    test_change_set = test_change_set_result.get("change_set")
 
-    if test_change_set and workspace and workspace.workspace_path:
-        for file_entry in test_change_set.get("files", []):
-            file_path = file_entry.get("path", "")
-            content = file_entry.get("content")
-            patch = file_entry.get("patch")
+    if not test_change_set:
+        logger.warning(f"test_agent returned no change_set, keys: {list(test_change_set_result.keys())}")
+        return test_change_set_result
 
+    if not workspace or not workspace.workspace_path:
+        logger.warning("No workspace available, skipping test apply and execution")
+        return test_change_set_result
+
+    apply_errors = []
+    for file_entry in test_change_set.get("files", []):
+        file_path = file_entry.get("path", "")
+        content = file_entry.get("content")
+        patch = file_entry.get("patch")
+
+        try:
             if content:
                 await apply_patch(
                     workspace_path=workspace.workspace_path,
@@ -254,28 +259,36 @@ async def _execute_test_stage(
                     workspace_path=workspace.workspace_path,
                     patch_content=patch,
                 )
+        except Exception as e:
+            apply_errors.append(f"Failed to apply {file_path}: {str(e)}")
+            logger.warning(f"Failed to apply test file {file_path}: {e}")
 
-        test_command = settings.TEST_COMMAND
-        test_timeout = settings.TEST_TIMEOUT
+    test_command = settings.TEST_COMMAND
+    test_timeout = settings.TEST_TIMEOUT
 
-        cmd_result = await run_command(
-            command=test_command,
-            cwd=workspace.workspace_path,
-            timeout=test_timeout,
-        )
+    cmd_result = await run_command(
+        command=test_command,
+        cwd=workspace.workspace_path,
+        timeout=test_timeout,
+    )
 
-        test_report = {
-            "schema_version": "1.0",
-            "exit_code": cmd_result["exit_code"],
-            "stdout": cmd_result["stdout"][-5000:] if len(cmd_result["stdout"]) > 5000 else cmd_result["stdout"],
-            "stderr": cmd_result["stderr"][-5000:] if len(cmd_result["stderr"]) > 5000 else cmd_result["stderr"],
-            "duration_ms": cmd_result["duration_ms"],
-            "summary": _parse_test_summary(cmd_result),
-        }
+    stderr_parts = []
+    if apply_errors:
+        stderr_parts.append("Test file apply errors: " + "; ".join(apply_errors))
+    if cmd_result.get("stderr"):
+        stderr_parts.append(cmd_result["stderr"])
+    combined_stderr = "\n".join(stderr_parts)
 
-        return {"test_report": test_report}
+    test_report = {
+        "schema_version": "1.0",
+        "exit_code": cmd_result["exit_code"],
+        "stdout": cmd_result["stdout"][-5000:] if len(cmd_result["stdout"]) > 5000 else cmd_result["stdout"],
+        "stderr": combined_stderr[-5000:] if len(combined_stderr) > 5000 else combined_stderr,
+        "duration_ms": cmd_result["duration_ms"],
+        "summary": _parse_test_summary(cmd_result),
+    }
 
-    return test_change_set_result
+    return {"test_report": test_report}
 
 
 def _parse_test_summary(cmd_result: dict) -> dict:

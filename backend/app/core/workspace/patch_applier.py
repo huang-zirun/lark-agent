@@ -1,8 +1,12 @@
-import subprocess
 from pathlib import Path
 
 from app.shared.errors import ExecutionError
 from app.shared.logging import get_logger
+from app.shared.subprocess_utils import (
+    run_git,
+    safe_join,
+    normalize_patch_content,
+)
 
 logger = get_logger(__name__)
 
@@ -15,20 +19,32 @@ async def apply_patch(workspace_path: str, patch_content: str, file_path: str | 
         raise ExecutionError(f"Workspace not found: {workspace_path}")
 
     if file_path:
-        target_file = ws_path / file_path
+        try:
+            target_file = safe_join(ws_path, file_path)
+        except ValueError:
+            raise ExecutionError(f"Path escapes workspace: {file_path}")
         target_file.parent.mkdir(parents=True, exist_ok=True)
         target_file.write_text(patch_content, encoding="utf-8")
         return {"success": True, "method": "direct_write", "file": file_path}
 
+    patch_content = normalize_patch_content(patch_content)
+
+    check_result = run_git(
+        ["apply", "--check"],
+        cwd=str(ws_path),
+        timeout=30,
+        input=patch_content,
+    )
+    if check_result.returncode != 0:
+        logger.info(f"Patch check indicates issues: {check_result.stderr}")
+
     for attempt in range(1, MAX_PATCH_RETRIES + 2):
         try:
-            result = subprocess.run(
-                ["git", "apply", "--allow-empty"],
-                input=patch_content,
-                capture_output=True,
-                text=True,
+            result = run_git(
+                ["apply", "--allow-empty"],
                 cwd=str(ws_path),
                 timeout=30,
+                input=patch_content,
             )
             if result.returncode == 0:
                 logger.info(f"Patch applied successfully (attempt {attempt})")
@@ -38,24 +54,31 @@ async def apply_patch(workspace_path: str, patch_content: str, file_path: str | 
 
             if attempt <= MAX_PATCH_RETRIES:
                 try:
-                    result_fuzzy = subprocess.run(
-                        ["git", "apply", "--3way", "--allow-empty"],
-                        input=patch_content,
-                        capture_output=True,
-                        text=True,
+                    result_fuzzy = run_git(
+                        ["apply", "--3way", "--allow-empty"],
                         cwd=str(ws_path),
                         timeout=30,
+                        input=patch_content,
                     )
                     if result_fuzzy.returncode == 0:
                         logger.info(f"Patch applied with 3way merge (attempt {attempt})")
                         return {"success": True, "method": "git_apply_3way", "attempt": attempt}
-                except Exception:
-                    pass
+                    logger.warning(f"3way merge also failed: {result_fuzzy.stderr}")
+                except Exception as e3:
+                    logger.warning(f"3way merge exception: {e3}")
 
-        except subprocess.TimeoutExpired:
-            logger.warning(f"Patch apply attempt {attempt} timed out")
+        except Exception as e:
+            if "timed out" in str(e).lower():
+                logger.warning(f"Patch apply attempt {attempt} timed out")
+            else:
+                logger.warning(f"Patch apply attempt {attempt} error: {e}")
 
-    return {"success": False, "method": "failed", "attempts": MAX_PATCH_RETRIES + 1}
+    return {
+        "success": False,
+        "method": "failed",
+        "attempts": MAX_PATCH_RETRIES + 1,
+        "check_stderr": check_result.stderr if check_result.returncode != 0 else None,
+    }
 
 
 async def generate_diff(workspace_path: str) -> dict:
@@ -64,35 +87,27 @@ async def generate_diff(workspace_path: str) -> dict:
         raise ExecutionError(f"Workspace not found: {workspace_path}")
 
     try:
-        commit_result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
+        commit_result = run_git(
+            ["rev-parse", "HEAD"],
             cwd=str(ws_path),
             timeout=10,
         )
         base_commit = commit_result.stdout.strip() if commit_result.returncode == 0 else "unknown"
 
-        diff_result = subprocess.run(
-            ["git", "diff", "HEAD"],
-            capture_output=True,
-            text=True,
+        diff_result = run_git(
+            ["diff", "HEAD"],
             cwd=str(ws_path),
             timeout=30,
         )
 
-        stat_result = subprocess.run(
-            ["git", "diff", "--numstat", "HEAD"],
-            capture_output=True,
-            text=True,
+        stat_result = run_git(
+            ["diff", "--numstat", "HEAD"],
             cwd=str(ws_path),
             timeout=30,
         )
 
-        name_result = subprocess.run(
-            ["git", "diff", "--name-only", "HEAD"],
-            capture_output=True,
-            text=True,
+        name_result = run_git(
+            ["diff", "--name-only", "HEAD"],
             cwd=str(ws_path),
             timeout=30,
         )
@@ -124,5 +139,7 @@ async def generate_diff(workspace_path: str) -> dict:
             },
         }
 
-    except subprocess.TimeoutExpired:
-        raise ExecutionError("Git diff generation timed out")
+    except Exception as e:
+        if "timed out" in str(e).lower():
+            raise ExecutionError("Git diff generation timed out")
+        raise ExecutionError(f"Git diff generation failed: {e}")

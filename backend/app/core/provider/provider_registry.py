@@ -71,15 +71,19 @@ async def resolve_provider(
         register_provider_instance(config.id, instance)
         return instance
 
-    from app.core.provider.mock_provider import MockProvider
-    logger.warning("No provider configured, using MockProvider")
-    return MockProvider()
+    raise ExecutionError(
+        "No LLM Provider configured. Please configure at least one provider "
+        "(OpenAI or Anthropic) via the /api/providers endpoint or environment variables "
+        "(OPENAI_API_KEY or ANTHROPIC_API_KEY)."
+    )
 
 
 async def _create_provider_from_config(config: ProviderConfig) -> Any:
     if config.provider_type == ProviderType.MOCK:
-        from app.core.provider.mock_provider import MockProvider
-        return MockProvider()
+        raise ExecutionError(
+            "Mock Provider is no longer supported in production. "
+            "Please configure a real LLM Provider (OpenAI or Anthropic) instead."
+        )
     elif config.provider_type == ProviderType.OPENAI:
         from app.core.provider.openai_compatible import OpenAICompatibleProvider
         api_key = _decrypt_api_key(config.api_key_encrypted) if config.api_key_encrypted else ""

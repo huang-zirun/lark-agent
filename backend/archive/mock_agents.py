@@ -1,3 +1,25 @@
+"""
+[ARCHIVED] Mock Agents - 已归档，不再用于生产环境
+
+归档日期: 2026-04-27
+归档原因: 系统从 MOCK Agent 环境迁移到真实 LLM Provider 生产环境
+原始路径: backend/app/agents/mock_agents.py
+
+此文件包含6个 Mock Agent 实现，用于早期开发阶段验证 Pipeline 链路通畅性。
+迁移后，所有 Agent 均通过 app.agents.runner.run_agent() 调用真实 LLM Provider。
+
+如需临时回退到 MOCK 模式进行调试，可将此文件恢复到原始路径，
+并在 stage_runner.py 中重新添加 mock 判断逻辑。但生产环境严禁使用。
+
+Mock Agent 列表:
+- mock_requirement_agent: 返回固定的 requirement_brief
+- mock_design_agent: 返回固定的 design_spec
+- mock_code_patch_agent: 返回固定的 change_set
+- mock_test_agent: 返回固定的 test_report
+- mock_review_agent: 返回固定的 review_report
+- mock_delivery_agent: 返回固定的 delivery_summary
+"""
+
 from app.schemas.artifacts import ARTIFACT_TYPE_TO_SCHEMA
 from app.shared.errors import OutputValidationError
 from app.shared.logging import get_logger

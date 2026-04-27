@@ -44,17 +44,6 @@ async def _ensure_default_providers(session):
     existing = list(result.scalars().all())
     existing_types = {p.provider_type.value for p in existing}
 
-    if "mock" not in existing_types:
-        mock_provider = ProviderConfig(
-            id=generate_id(),
-            name="Mock Provider (default)",
-            provider_type=ProviderType.MOCK,
-            enabled=True,
-            priority=0,
-        )
-        session.add(mock_provider)
-        logger.info("Created default Mock Provider")
-
     if settings.OPENAI_API_KEY and "openai" not in existing_types:
         openai_provider = ProviderConfig(
             id=generate_id(),
@@ -81,5 +70,12 @@ async def _ensure_default_providers(session):
         )
         session.add(anthropic_provider)
         logger.info("Created Anthropic Provider from environment config")
+
+    real_providers = [p for p in existing if p.provider_type != ProviderType.MOCK and p.enabled]
+    if not real_providers and not settings.OPENAI_API_KEY and not settings.ANTHROPIC_API_KEY:
+        logger.warning(
+            "No real LLM Provider configured! Please set OPENAI_API_KEY or ANTHROPIC_API_KEY "
+            "in environment variables or configure providers via /api/providers endpoint."
+        )
 
     await session.flush()

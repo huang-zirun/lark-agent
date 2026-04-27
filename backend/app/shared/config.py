@@ -1,6 +1,8 @@
 from pydantic_settings import BaseSettings
 from pathlib import Path
 
+from app.shared.subprocess_utils import normalize_absolute_path
+
 
 class Settings(BaseSettings):
     APP_NAME: str = "DevFlow Engine"
@@ -14,7 +16,7 @@ class Settings(BaseSettings):
 
     ENCRYPTION_KEY: str = "devflow-default-encryption-key-32b"
 
-    DEFAULT_PROVIDER_TYPE: str = "mock"
+    DEFAULT_PROVIDER_TYPE: str = "openai"
     OPENAI_API_KEY: str = ""
     OPENAI_API_BASE: str = "https://api.openai.com/v1"
     OPENAI_DEFAULT_MODEL: str = "gpt-4o"
@@ -35,7 +37,7 @@ settings = Settings()
 
 
 def ensure_directories():
-    Path(settings.ARTIFACT_STORAGE_PATH).mkdir(parents=True, exist_ok=True)
-    Path(settings.WORKSPACE_ROOT_PATH).mkdir(parents=True, exist_ok=True)
-    Path(settings.LOG_DIR).mkdir(parents=True, exist_ok=True)
-    Path("./data").mkdir(parents=True, exist_ok=True)
+    Path(normalize_absolute_path(Path(settings.ARTIFACT_STORAGE_PATH))).mkdir(parents=True, exist_ok=True)
+    Path(normalize_absolute_path(Path(settings.WORKSPACE_ROOT_PATH))).mkdir(parents=True, exist_ok=True)
+    Path(normalize_absolute_path(Path(settings.LOG_DIR))).mkdir(parents=True, exist_ok=True)
+    Path(normalize_absolute_path(Path("./data"))).mkdir(parents=True, exist_ok=True)

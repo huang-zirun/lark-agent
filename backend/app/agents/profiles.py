@@ -48,10 +48,11 @@ PROFILES = {
             "Each file change must include the full test file content (use change_type='create' with content field for new test files). "
             "Write comprehensive tests that cover the acceptance criteria. "
             "The test files will be written to the workspace and executed automatically. "
-            "Output valid JSON with a 'change_set' key containing the test files."
+            "Output valid JSON with a 'change_set' key containing the test files. "
+            "The change_set must have: schema_version='1.0', files (list of file entries with path/change_type/content), and reasoning."
         ),
         input_schema="TestAgentInput",
-        output_schema="TestAgentOutput",
+        output_schema="TestChangeAgentOutput",
     ),
     "review_agent": AgentProfile(
         role="code_reviewer",

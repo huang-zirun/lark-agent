@@ -1,4 +1,3 @@
-import subprocess
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +9,12 @@ from app.shared.config import settings
 from app.shared.ids import generate_id
 from app.shared.errors import PrecheckError, ExecutionError
 from app.shared.logging import get_logger
+from app.shared.subprocess_utils import (
+    run_git,
+    normalize_absolute_path,
+    safe_join,
+    find_git,
+)
 
 logger = get_logger(__name__)
 
@@ -19,10 +24,18 @@ def _validate_git_repo(path: str) -> bool:
     if not repo_path.exists():
         return False
     git_dir = repo_path / ".git"
-    return git_dir.exists()
+    if not git_dir.exists():
+        return False
+    try:
+        result = run_git(["rev-parse", "--git-dir"], cwd=str(repo_path), timeout=10)
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 async def register_repo(session: AsyncSession, source_repo_path: str) -> Workspace:
+    find_git()
+
     source_path = Path(source_repo_path).resolve()
     if not source_path.exists():
         raise PrecheckError(f"Path does not exist: {source_repo_path}")
@@ -35,25 +48,26 @@ async def register_repo(session: AsyncSession, source_repo_path: str) -> Workspa
     workspace_path = workspace_root / f"ws_{generate_id()[:12]}"
 
     try:
-        subprocess.run(
-            ["git", "clone", str(source_path), str(workspace_path)],
-            capture_output=True,
-            text=True,
-            check=True,
+        run_git(
+            ["clone", str(source_path), str(workspace_path)],
+            cwd=".",
             timeout=120,
         )
-    except subprocess.CalledProcessError as e:
-        raise ExecutionError(f"Git clone failed: {e.stderr}")
-    except subprocess.TimeoutExpired:
-        raise ExecutionError("Git clone timed out")
+    except Exception as e:
+        stderr = ""
+        if hasattr(e, "stderr") and e.stderr:
+            stderr = e.stderr
+        raise ExecutionError(
+            f"Git clone failed (source={source_path}, target={workspace_path}): {stderr}"
+        )
 
     commit_hash = _get_current_commit(str(workspace_path))
 
     workspace = Workspace(
         id=generate_id(),
         run_id=None,
-        source_repo_path=str(source_path),
-        workspace_path=str(workspace_path),
+        source_repo_path=normalize_absolute_path(source_path),
+        workspace_path=normalize_absolute_path(workspace_path),
         git_commit_at_create=commit_hash,
         status=WorkspaceStatus.ACTIVE,
     )
@@ -64,31 +78,37 @@ async def register_repo(session: AsyncSession, source_repo_path: str) -> Workspa
 
 
 async def create_workspace_for_run(session: AsyncSession, run_id: str, base_workspace_id: str) -> Workspace:
+    find_git()
+
     base_ws = await session.get(Workspace, base_workspace_id)
     if not base_ws:
         raise ExecutionError(f"Base workspace {base_workspace_id} not found")
 
     workspace_root = Path(settings.WORKSPACE_ROOT_PATH)
+    workspace_root.mkdir(parents=True, exist_ok=True)
     workspace_path = workspace_root / f"run_{run_id[:12]}"
 
     try:
-        subprocess.run(
-            ["git", "clone", base_ws.source_repo_path, str(workspace_path)],
-            capture_output=True,
-            text=True,
-            check=True,
+        run_git(
+            ["clone", base_ws.source_repo_path, str(workspace_path)],
+            cwd=".",
             timeout=120,
         )
-    except subprocess.CalledProcessError as e:
-        raise ExecutionError(f"Git clone for run failed: {e.stderr}")
+    except Exception as e:
+        stderr = ""
+        if hasattr(e, "stderr") and e.stderr:
+            stderr = e.stderr
+        raise ExecutionError(
+            f"Git clone for run failed (source={base_ws.source_repo_path}, target={workspace_path}): {stderr}"
+        )
 
     commit_hash = _get_current_commit(str(workspace_path))
 
     workspace = Workspace(
         id=generate_id(),
         run_id=run_id,
-        source_repo_path=base_ws.source_repo_path,
-        workspace_path=str(workspace_path),
+        source_repo_path=normalize_absolute_path(Path(base_ws.source_repo_path)),
+        workspace_path=normalize_absolute_path(workspace_path),
         git_commit_at_create=commit_hash,
         status=WorkspaceStatus.ACTIVE,
     )
@@ -133,34 +153,30 @@ async def get_diff(session: AsyncSession, workspace_id: str) -> dict:
         raise ExecutionError(f"Workspace directory not found: {ws_path}")
 
     try:
-        result = subprocess.run(
-            ["git", "diff", "HEAD"],
-            capture_output=True,
-            text=True,
+        result = run_git(
+            ["diff", "HEAD"],
             cwd=str(ws_path),
             timeout=30,
         )
         diff_output = result.stdout
 
-        stat_result = subprocess.run(
-            ["git", "diff", "--stat", "HEAD"],
-            capture_output=True,
-            text=True,
+        stat_result = run_git(
+            ["diff", "--stat", "HEAD"],
             cwd=str(ws_path),
             timeout=30,
         )
 
-        name_only_result = subprocess.run(
-            ["git", "diff", "--name-only", "HEAD"],
-            capture_output=True,
-            text=True,
+        name_only_result = run_git(
+            ["diff", "--name-only", "HEAD"],
             cwd=str(ws_path),
             timeout=30,
         )
         changed_files = [f for f in name_only_result.stdout.strip().split("\n") if f]
 
-    except subprocess.TimeoutExpired:
-        raise ExecutionError("Git diff timed out")
+    except Exception as e:
+        if isinstance(e, TimeoutError) or "timed out" in str(e).lower():
+            raise ExecutionError("Git diff timed out")
+        raise ExecutionError(f"Git diff failed: {e}")
 
     return {
         "workspace_id": workspace_id,
@@ -172,10 +188,8 @@ async def get_diff(session: AsyncSession, workspace_id: str) -> dict:
 
 def _get_current_commit(repo_path: str) -> str | None:
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
+        result = run_git(
+            ["rev-parse", "HEAD"],
             cwd=repo_path,
             timeout=10,
         )
@@ -266,7 +280,11 @@ def read_file_content(
     max_lines: int = 200,
 ) -> str | None:
     ws_path = Path(workspace_path)
-    target = ws_path / file_path
+    try:
+        target = safe_join(ws_path, file_path)
+    except ValueError:
+        logger.warning(f"Path traversal blocked: {file_path}")
+        return None
 
     if not target.exists():
         return None
@@ -318,17 +336,9 @@ def snapshot_workspace(workspace_path: str, message: str) -> str | None:
         return None
 
     try:
-        subprocess.run(
-            ["git", "add", "-A"],
-            capture_output=True,
-            text=True,
-            cwd=str(ws_path),
-            timeout=30,
-        )
-        result = subprocess.run(
-            ["git", "commit", "-m", f"snapshot: {message}", "--allow-empty"],
-            capture_output=True,
-            text=True,
+        run_git(["add", "-A"], cwd=str(ws_path), timeout=30)
+        result = run_git(
+            ["commit", "-m", f"snapshot: {message}", "--allow-empty"],
             cwd=str(ws_path),
             timeout=30,
         )
@@ -347,10 +357,8 @@ def restore_workspace_snapshot(workspace_path: str, commit_hash: str) -> bool:
         return False
 
     try:
-        result = subprocess.run(
-            ["git", "reset", "--hard", commit_hash],
-            capture_output=True,
-            text=True,
+        result = run_git(
+            ["reset", "--hard", commit_hash],
             cwd=str(ws_path),
             timeout=30,
         )

@@ -1,7 +1,7 @@
+import os
 import subprocess
 import time
 
-from app.shared.errors import ExecutionError
 from app.shared.logging import get_logger
 
 logger = get_logger(__name__)
@@ -15,15 +15,25 @@ async def run_command(
 ) -> dict:
     start_time = time.time()
 
+    merged_env = {
+        **os.environ,
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+    }
+    if env:
+        merged_env.update(env)
+
     try:
         result = subprocess.run(
             command,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=cwd,
             timeout=timeout,
             shell=True,
-            env=env,
+            env=merged_env,
         )
         duration_ms = int((time.time() - start_time) * 1000)
 

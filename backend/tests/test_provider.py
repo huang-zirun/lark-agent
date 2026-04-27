@@ -1,44 +1,6 @@
 import pytest
 
-from app.core.provider.mock_provider import MockProvider
 from app.shared.errors import ExecutionError, AuthenticationError, RateLimitError
-
-
-class TestMockProvider:
-    @pytest.mark.asyncio
-    async def test_generate_without_schema(self):
-        provider = MockProvider()
-        result = await provider.generate(prompt="test prompt")
-        assert result == "Mock response"
-
-    @pytest.mark.asyncio
-    async def test_generate_with_schema(self):
-        provider = MockProvider()
-        schema = {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "count": {"type": "integer"},
-                "active": {"type": "boolean"},
-            },
-        }
-        result = await provider.generate(prompt="test", schema=schema)
-        assert isinstance(result, dict)
-        assert result["name"] == "mock_name"
-        assert result["count"] == 0
-        assert result["active"] is True
-
-    @pytest.mark.asyncio
-    async def test_validate(self):
-        provider = MockProvider()
-        assert await provider.validate() is True
-
-    @pytest.mark.asyncio
-    async def test_last_usage(self):
-        provider = MockProvider()
-        await provider.generate(prompt="test")
-        assert provider._last_usage is not None
-        assert provider._last_usage["total_tokens"] == 0
 
 
 class TestErrorClasses:
@@ -55,3 +17,35 @@ class TestErrorClasses:
     def test_rate_limit_error_no_retry_after(self):
         err = RateLimitError("too many requests")
         assert err.retry_after is None
+
+
+class TestProviderRegistryNoFallback:
+    @pytest.mark.asyncio
+    async def test_no_provider_raises_error(self):
+        from app.core.provider.provider_registry import resolve_provider
+        from app.shared.errors import ExecutionError
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_result.scalars.return_value.all.return_value = []
+        mock_session.execute.return_value = mock_result
+        mock_session.get.return_value = None
+
+        with pytest.raises(ExecutionError, match="No LLM Provider configured"):
+            await resolve_provider(mock_session)
+
+
+class TestOpenAICompatibleProvider:
+    @pytest.mark.asyncio
+    async def test_validate_with_invalid_key(self):
+        from app.core.provider.openai_compatible import OpenAICompatibleProvider
+
+        provider = OpenAICompatibleProvider(
+            api_base="https://api.openai.com/v1",
+            api_key="invalid-key-for-testing",
+            model="gpt-4o",
+        )
+        result = await provider.validate()
+        assert result is False

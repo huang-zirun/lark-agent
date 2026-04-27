@@ -26,16 +26,15 @@ from app.db.base import init_db
 from app.models.provider import ProviderConfig
 
 
-async def disable_real_providers(session):
+async def ensure_providers_ready(session):
     result = await session.execute(
         select(ProviderConfig).where(ProviderConfig.enabled == True)
     )
     providers = list(result.scalars().all())
-    for p in providers:
-        p.enabled = False
-    if providers:
-        await session.flush()
-        print(f"   Disabled {len(providers)} real provider(s) for test isolation")
+    if not providers:
+        print("   WARNING: No enabled providers found. Pipeline will fail without a configured LLM Provider.")
+    else:
+        print(f"   Found {len(providers)} enabled provider(s)")
 
 
 async def verify_state(session, run_id, expected_pipeline_status, expected_stage_states, label):

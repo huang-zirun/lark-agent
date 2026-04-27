@@ -1,0 +1,35 @@
+- [x] `subprocess_utils.py` 已创建，包含 `run_git()` 函数
+- [x] `run_git()` 自动注入 `GIT_TERMINAL_PROMPT=0`、`GIT_PAGER=cat`、`LC_ALL=C.UTF-8` 环境变量
+- [x] `run_git()` 自动注入 Git 身份隔离环境变量（`GIT_AUTHOR_NAME=devflow` 等）
+- [x] `run_git()` 显式指定 `encoding="utf-8"` 和 `errors="replace"`
+- [x] `run_git()` 在 Windows 上自动去除 `\\?\` 长路径前缀
+- [x] `normalize_absolute_path()` 函数实现：`Path.resolve()` + Windows `\\?\` 去除 + 驱动器号大写
+- [x] `safe_join()` 函数实现：路径边界校验，越界抛出 `ValueError`
+- [x] `find_git()` 函数实现：`shutil.which("git")` + Windows 常见路径回退
+- [x] `normalize_patch_content()` 函数实现：去 BOM + 统一 `\r\n` 为 `\n`
+- [x] `workspace_manager.py:register_repo` 中 `workspace_path` 和 `source_repo_path` 存储为绝对路径
+- [x] `workspace_manager.py:create_workspace_for_run` 中 `workspace_path` 和 `source_repo_path` 存储为绝对路径
+- [x] `artifact_store.py:_get_artifact_dir` 返回绝对路径
+- [x] `artifact_store.py:save_artifact_file` 返回的 `storage_uri` 为绝对路径
+- [x] `config.py:ensure_directories` 将路径解析为绝对路径后创建目录
+- [x] `workspace_manager.py` 中所有 `subprocess.run(["git", ...])` 替换为 `run_git()`
+- [x] `patch_applier.py` 中所有 `subprocess.run(["git", ...])` 替换为 `run_git()`
+- [x] `command_runner.py` 中 `subprocess.run` 添加 `encoding="utf-8"` 和 `errors="replace"`，注入 `PYTHONUTF8=1` 和 `PYTHONIOENCODING=utf-8`
+- [x] `_validate_git_repo` 额外调用 `run_git(["rev-parse", "--git-dir"])` 验证 Git 功能
+- [x] `register_repo` 开头调用 `find_git()` 预检，不可用时抛出 `PrecheckError` 含安装指引
+- [x] `create_workspace_for_run` 开头调用 `find_git()` 预检
+- [x] `create_workspace_for_run` 在 `git clone` 前预创建父目录
+- [x] `create_workspace_for_run` 的 `git clone` 错误处理包含完整 stderr、源路径和目标路径
+- [x] `workspace_manager.py:read_file_content` 使用 `safe_join()` 替代直接路径拼接
+- [x] `patch_applier.py:apply_patch` 中 `file_path` 不为 None 时使用 `safe_join()` 替代直接拼接
+- [x] `patch_applier.py:apply_patch` 对 `patch_content` 调用 `normalize_patch_content()` 预处理
+- [x] `patch_applier.py:apply_patch` 在 `git apply` 前添加 `git apply --check` dry-run 验证
+- [x] Patch 应用流程重构为渐进策略：预处理 → `--check` → 正常 `git apply` → `--3way` → 详细错误
+- [x] 注册中文路径 Git 仓库成功，数据库中路径为绝对路径（无 `\\?\` 前缀）
+- [x] Pipeline 启动后 workspace 正确创建，`git clone` 成功
+- [x] Artifact 存储路径为绝对路径，大文件保存和读取正常
+- [x] Git 不可用时 `register_repo` 返回明确的 `PrecheckError` 且含安装指引
+- [x] 从不同工作目录启动服务时，workspace 路径正确解析
+- [x] `safe_join` 阻止路径遍历攻击（如 `../../etc/passwd`）
+- [x] Patch 内容包含 CRLF 时，预处理后 `git apply` 成功
+- [x] `run_git()` 自动注入的环境变量生效（`GIT_TERMINAL_PROMPT=0` 等）

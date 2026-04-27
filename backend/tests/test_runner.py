@@ -85,7 +85,8 @@ class TestValidateAndFixOutput:
             "unknown_type": {"some": "data"},
         }
         validated = _validate_and_fix_output(result, "test_agent")
-        assert "unknown_type" in validated
+        assert "unknown_type" not in validated
+        assert len(validated) == 0
 
 
 class TestGetDefaultForProperty:

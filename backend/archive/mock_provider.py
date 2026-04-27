@@ -1,3 +1,18 @@
+"""
+[ARCHIVED] Mock Provider - 已归档，不再用于生产环境
+
+归档日期: 2026-04-27
+归档原因: 系统从 MOCK Agent 环境迁移到真实 LLM Provider 生产环境
+原始路径: backend/app/core/provider/mock_provider.py
+
+此文件包含 MockProvider 类，用于早期开发阶段在没有 LLM API 的情况下
+验证 Provider 接口和 Pipeline 链路。迁移后，系统使用 OpenAI 和 Anthropic
+真实 Provider，不再需要 Mock Provider。
+
+如需临时回退，可将此文件恢复到原始路径，并在 provider_registry.py 中
+重新添加 MockProvider 降级逻辑。但生产环境严禁使用。
+"""
+
 from app.shared.logging import get_logger
 
 logger = get_logger(__name__)

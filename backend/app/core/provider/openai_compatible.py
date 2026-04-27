@@ -38,6 +38,7 @@ class OpenAICompatibleProvider:
         if use_structured_output:
             schema_prompt = f"\n\n请严格按照以下 JSON Schema 格式返回结果：\n{json.dumps(schema, ensure_ascii=False, indent=2)}\n只返回 JSON，不要包含其他内容。"
             messages[-1]["content"] = messages[-1]["content"] + schema_prompt
+            payload["response_format"] = {"type": "json_object"}
 
         timeout_seconds = settings.LLM_TIMEOUT_SECONDS
 

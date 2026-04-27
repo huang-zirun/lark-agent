@@ -8,7 +8,7 @@ from app.db.base import Base
 
 
 class ProviderType(str, enum.Enum):
-    MOCK = "mock"
+    MOCK = "mock"  # deprecated: kept for backward compatibility with existing DB records
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
 
