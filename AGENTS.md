@@ -29,6 +29,7 @@
 - **Use PowerShell**: all CLI operations use PowerShell syntax; avoid cmd.exe/Bash.
 - **PowerShell Limitation**: PowerShell does not support `&&` syntax for chaining commands; use semicolon `;` or separate commands instead.
 - **Use Standard Git Commit**: follow conventional commits format (`type(scope): subject`) with clear, descriptive messages; keep commits atomic and focused.
+- **Clean Up Temporary Scripts**: delete any temporary scripts created for testing or validation purposes once verification is complete.
 
 ## Design Principles
 

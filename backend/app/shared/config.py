@@ -4,6 +4,10 @@ from pathlib import Path
 from app.shared.subprocess_utils import normalize_absolute_path
 
 
+# 项目根目录（backend 的父目录）
+PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+
+
 class Settings(BaseSettings):
     APP_NAME: str = "DevFlow Engine"
     APP_VERSION: str = "0.1.0"
@@ -11,10 +15,10 @@ class Settings(BaseSettings):
 
     PORT: int = 19999
 
-    DATABASE_URL: str = "sqlite+aiosqlite:///./data/devflow.db"
-    ARTIFACT_STORAGE_PATH: str = "./data/artifacts"
-    WORKSPACE_ROOT_PATH: str = "./data/workspaces"
-    LOG_DIR: str = "./data/logs"
+    DATABASE_URL: str = f"sqlite+aiosqlite:///{PROJECT_ROOT}/data/devflow.db"
+    ARTIFACT_STORAGE_PATH: str = str(PROJECT_ROOT / "data" / "artifacts")
+    WORKSPACE_ROOT_PATH: str = str(PROJECT_ROOT / "data" / "workspaces")
+    LOG_DIR: str = str(PROJECT_ROOT / "data" / "logs")
 
     ENCRYPTION_KEY: str = "devflow-default-encryption-key-32b"
 
@@ -39,7 +43,7 @@ settings = Settings()
 
 
 def ensure_directories():
-    Path(normalize_absolute_path(Path(settings.ARTIFACT_STORAGE_PATH))).mkdir(parents=True, exist_ok=True)
-    Path(normalize_absolute_path(Path(settings.WORKSPACE_ROOT_PATH))).mkdir(parents=True, exist_ok=True)
-    Path(normalize_absolute_path(Path(settings.LOG_DIR))).mkdir(parents=True, exist_ok=True)
-    Path(normalize_absolute_path(Path("./data"))).mkdir(parents=True, exist_ok=True)
+    Path(settings.ARTIFACT_STORAGE_PATH).mkdir(parents=True, exist_ok=True)
+    Path(settings.WORKSPACE_ROOT_PATH).mkdir(parents=True, exist_ok=True)
+    Path(settings.LOG_DIR).mkdir(parents=True, exist_ok=True)
+    Path(PROJECT_ROOT / "data").mkdir(parents=True, exist_ok=True)

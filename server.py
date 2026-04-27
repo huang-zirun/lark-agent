@@ -47,8 +47,8 @@ class ServerManager:
 
     def __init__(
         self,
-        backend_port: int = 8000,
-        frontend_port: int = 5173,
+        backend_port: int = 19999,
+        frontend_port: int = 3000,
         backend_host: str = "127.0.0.1",
         frontend_host: str = "127.0.0.1",
         enable_backend: bool = True,
@@ -371,14 +371,14 @@ def main():
     parser.add_argument(
         "--backend-port",
         type=int,
-        default=8000,
-        help="后端服务端口 (默认: 8000)",
+        default=19999,
+        help="后端服务端口 (默认: 19999)",
     )
     parser.add_argument(
         "--frontend-port",
         type=int,
-        default=5173,
-        help="前端服务端口 (默认: 5173)",
+        default=3000,
+        help="前端服务端口 (默认: 3000)",
     )
     parser.add_argument(
         "--backend-host",
