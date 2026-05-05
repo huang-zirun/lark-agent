@@ -108,7 +108,7 @@ The current deliverable is a Python CLI and REST minimal DevFlow runtime. It inc
 - If the success-path PRD card reply fails after analysis has completed, `devflow start` sends a text fallback reply so the user still receives a visible completion message and can inspect `run.json`.
 - Interactive cards must use `lark_md`-safe formatting only. The `- ` unordered list syntax is not supported in `lark_md` text elements (it is only valid in dedicated `markdown` components); using it causes Lark API error `99992402` / "field validation failed". All card list items use `• ` (Unicode bullet) instead.
 - If the solution review checkpoint card fails to publish, `publish_solution_review_checkpoint` records the error in `run_payload["reply_error"]` so that subsequent text replies can include a failure notice, and the resume/rerun text reply paths also catch `LarkCliError` to avoid crashing the pipeline.
-- Use LLM analysis by default through OpenAI-compatible Chat Completions. Supported provider keys are `ark`, `bailian`, `deepseek`, `openai`, and `custom`.
+- Use LLM analysis by default through OpenAI-compatible Chat Completions. Supported provider keys are `ark`, `bailian`, `deepseek`, `mimo`, `openai`, and `custom`.
 - LLM calls expose a rich completion result internally so the pipeline can persist raw request/response payloads, provider token usage, usage source, and request duration while keeping API keys and Authorization headers out of audit files.
 - Keep the deterministic local analyzer as explicit `--analyzer heuristic` offline mode.
 - Use progressive disclosure: top-level JSON stays compact, while long source content is split into indexed sections.
