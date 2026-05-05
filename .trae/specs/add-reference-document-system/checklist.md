@@ -1,0 +1,16 @@
+- [ ] ReferenceRegistry 核心模块实现：索引构建、懒加载、章节提取、按阶段查询、字符截断功能正常
+- [ ] ReferenceConfig 配置类已添加到 DevflowConfig，config.example.json 包含 reference 段
+- [ ] 12 个参考文档已创建，每个文档包含有效的 YAML front matter（name, title, description, tags, version, applicable_stages, priority）和正文
+- [ ] 每个参考文档正文控制在 1500-3000 字符范围内，包含 `## Agent 使用指引` 章节
+- [ ] 所有参考文档内容基于公开行业标准编写，无任何私有实现引用
+- [ ] 方案设计 Agent prompt 中成功注入 reference_documents 字段（adr-template, tech-selection, layered-architecture, api-design, db-schema, auth-flow）
+- [ ] 需求分析 Agent prompt 中成功注入 reference_documents 字段（ears-syntax, nfr-checklist）
+- [ ] 代码生成 Agent prompt 中成功注入 reference_documents 字段（git-conventions, env-management）
+- [ ] 测试生成 Agent prompt 中成功注入 reference_documents 字段（testing-strategy）
+- [ ] 代码评审 Agent prompt 中成功注入 reference_documents 字段（nfr-checklist, release-checklist）
+- [ ] build_codebase_context 返回值包含 reference_documents 字段
+- [ ] solution.json 产物包含 reference_documents_used 字段，记录实际注入的文档及字符数
+- [ ] code-review.json 产物包含 reference_documents_used 字段，记录实际注入的文档及字符数
+- [ ] reference.enabled=false 时所有 Agent 正常工作，无参考文档注入，reference_documents 为空列表
+- [ ] 端到端验证：devflow start --analyzer heuristic 跑通完整 pipeline，参考文档注入正常
+- [ ] 单元测试 test_reference_registry.py 通过：索引构建、懒加载、章节提取、按阶段查询、字符截断
