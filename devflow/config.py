@@ -66,6 +66,13 @@ class InteractionConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ReferenceConfig:
+    enabled: bool = True
+    max_chars_per_stage: int = 4000
+    max_chars_per_document: int = 2000
+
+
+@dataclass(frozen=True, slots=True)
 class DevflowConfig:
     llm: LlmConfig
     lark: LarkConfig
@@ -73,6 +80,7 @@ class DevflowConfig:
     approval: ApprovalConfig = field(default_factory=ApprovalConfig)
     semantic: SemanticConfig = field(default_factory=SemanticConfig)
     interaction: InteractionConfig = field(default_factory=InteractionConfig)
+    reference: ReferenceConfig = field(default_factory=ReferenceConfig)
 
 
 def load_config(
@@ -105,6 +113,7 @@ def load_config(
     approval_section = _section(payload, "approval")
     semantic_section = _section(payload, "semantic")
     interaction_section = _section(payload, "interaction")
+    reference_section = _section(payload, "reference")
 
     effective_provider = provider_override or _string(llm_section.get("provider")) or "ark"
 
@@ -152,6 +161,11 @@ def load_config(
         message_merge_window_seconds=_int(interaction_section.get("message_merge_window_seconds"), 5),
         progress_notifications_enabled=_bool(interaction_section.get("progress_notifications_enabled"), True),
     )
+    reference = ReferenceConfig(
+        enabled=_bool(reference_section.get("enabled"), True),
+        max_chars_per_stage=_int(reference_section.get("max_chars_per_stage"), 4000),
+        max_chars_per_document=_int(reference_section.get("max_chars_per_document"), 2000),
+    )
 
     if lark.cli_version != LOCKED_LARK_CLI_VERSION:
         raise ConfigError(
@@ -168,7 +182,7 @@ def load_config(
     if require_lark_test_doc:
         _require("lark.test_doc", lark.test_doc)
 
-    return DevflowConfig(llm=llm, lark=lark, workspace=workspace, approval=approval, semantic=semantic, interaction=interaction)
+    return DevflowConfig(llm=llm, lark=lark, workspace=workspace, approval=approval, semantic=semantic, interaction=interaction, reference=reference)
 
 
 def _section(payload: dict[str, Any], name: str) -> dict[str, Any]:
