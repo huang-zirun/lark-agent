@@ -1,18 +1,65 @@
+# === Python ===
 .venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+*.egg-info/
+.eggs/
+*.egg
+*.so
+*.dylib
+*.dll
+
+# === Node ===
+node_modules/
+
+# === 构建产物 ===
+dist/
+build/
 artifacts/
+
+# === 配置/密钥 ===
 config.json
 key.md
-node_modules/
+.env
+.env.*
+!.env.example
+
+# === IDE / 编辑器 ===
+.vscode/
+.idea/
+*.sw?
+*.swo
+*~
+
+# === 操作系统 ===
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# === 测试覆盖率 ===
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# === 日志 ===
+*.log
+logs/
+
+# === 临时文件 ===
 .test-tmp/
 .test-tmp-*/
 tmp/
+*.tmp
+*.bak
+
+# === 项目特定 ===
 claw-code-main/
 workspaces/
 pick-pick/
 snake-game/
 .devflow-index/
+.trae/
