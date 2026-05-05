@@ -29,6 +29,12 @@ finding 字段：
 - glob_search: {"pattern":"glob模式"}
 - grep_search: {"pattern":"正则表达式","glob":"文件模式"}
 - powershell: {"command":"命令","timeout_seconds":60}
+
+参考文档使用：
+- 输入中包含 reference_documents 字段，提供非功能需求检查清单和发布就绪检查清单参考。
+- 在评审安全性时参考 OWASP 非功能需求检查清单，确保关键安全项不被遗漏。
+- 在评估发布就绪度时参考发布检查清单，确认关键检查项已覆盖。
+- 参考文档是指导性建议，需结合项目实际情况灵活应用。
 """
 
 
@@ -38,6 +44,7 @@ def build_code_review_user_prompt(
     code_generation: dict[str, Any],
     test_generation: dict[str, Any],
     tool_events: list[dict[str, Any]],
+    reference_documents: list[dict[str, Any]] | None = None,
 ) -> str:
     payload = {
         "requirement": {
@@ -65,6 +72,7 @@ def build_code_review_user_prompt(
             "warnings": test_generation.get("warnings"),
             "diff": test_generation.get("diff"),
         },
+        "reference_documents": reference_documents or [],
         "tool_events": tool_events[-20:],
         "instruction": "必要时读取变更文件或运行只读检查；完成后返回 finish。若存在阻塞问题，review_status 必须为 needs_changes 或 blocked。",
     }

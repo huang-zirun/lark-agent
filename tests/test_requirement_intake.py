@@ -13,6 +13,7 @@ from devflow.config import DevflowConfig, LarkConfig, LlmConfig
 from devflow.intake.analyzer import build_requirement_artifact
 from devflow.intake.lark_cli import (
     LarkCliNotFound,
+    _resolve_native_exe_from_cmd_shim,
     bot_message_event_command,
     event_to_source,
     fetch_doc_source,
@@ -249,7 +250,7 @@ class RequirementIntakeTests(unittest.TestCase):
         self.assertIn("未在 PATH 中找到 lark-cli", message)
         self.assertIn("npm.cmd install -g @larksuite/cli@1.0.23", message)
 
-    def test_windows_prefers_cmd_shim_for_lark_cli(self) -> None:
+    def test_windows_falls_back_to_cmd_shim_when_exe_missing(self) -> None:
         def which(name: str) -> str | None:
             if name == "lark-cli.cmd":
                 return r"D:\DevTools\npm-global\lark-cli.cmd"
@@ -262,6 +263,31 @@ class RequirementIntakeTests(unittest.TestCase):
                 executable = find_lark_cli_executable()
 
         self.assertTrue(executable.endswith("lark-cli.cmd"))
+
+    def test_windows_resolves_native_exe_from_cmd_shim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            shim_dir = Path(tmp) / ".bin"
+            shim_dir.mkdir()
+            (shim_dir / "lark-cli.cmd").write_text("@echo off", encoding="utf-8")
+            pkg_bin = Path(tmp) / "@larksuite" / "cli" / "bin"
+            pkg_bin.mkdir(parents=True)
+            (pkg_bin / "lark-cli.exe").write_bytes(b"\x00")
+
+            def which(name: str) -> str | None:
+                if name == "lark-cli.cmd":
+                    return str(shim_dir / "lark-cli.cmd")
+                return None
+
+            with patch("devflow.intake.lark_cli.os.name", "nt"):
+                with patch("shutil.which", side_effect=which):
+                    executable = find_lark_cli_executable()
+
+            self.assertTrue(executable.endswith("lark-cli.exe"))
+            self.assertIn("@larksuite", executable)
+
+    def test_resolve_native_exe_returns_none_when_missing(self) -> None:
+        result = _resolve_native_exe_from_cmd_shim(r"C:\nonexistent\lark-cli.cmd")
+        self.assertIsNone(result)
 
     def test_cli_from_doc_writes_artifact(self) -> None:
         fake_source = RequirementSource(

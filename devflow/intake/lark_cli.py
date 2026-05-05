@@ -30,13 +30,27 @@ class LarkCliNotFound(LarkCliError):
     """Raised when lark-cli is not installed or not on PATH."""
 
 
+def _resolve_native_exe_from_cmd_shim(cmd_path: str) -> str | None:
+    shim_dir = os.path.dirname(cmd_path)
+    exe_path = os.path.normpath(
+        os.path.join(shim_dir, "..", "@larksuite", "cli", "bin", "lark-cli.exe")
+    )
+    if os.path.isfile(exe_path):
+        return exe_path
+    return None
+
+
 def find_lark_cli_executable() -> str:
     candidates = ["lark-cli"]
     if os.name == "nt":
-        candidates = ["lark-cli.cmd", "lark-cli.exe", "lark-cli"]
+        candidates = ["lark-cli.exe", "lark-cli.cmd", "lark-cli"]
     for candidate in candidates:
         executable = shutil.which(candidate)
         if executable is not None:
+            if os.name == "nt" and executable.endswith(".cmd"):
+                native_exe = _resolve_native_exe_from_cmd_shim(executable)
+                if native_exe is not None:
+                    return native_exe
             return executable
     raise LarkCliNotFound(
         "未在 PATH 中找到 lark-cli。请先运行 "

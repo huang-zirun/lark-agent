@@ -1,6 +1,6 @@
 # DevFlow Engine Design Snapshot
 
-Last updated: 2026-05-06 (Restored Chinese console messages after UTF-8 encoding fix)
+Last updated: 2026-05-06 (Added competitor analysis findings from Celia-veey/orchestration-engine)
 
 ## Working Rules
 
@@ -52,7 +52,7 @@ The current deliverable is a Python CLI and REST minimal DevFlow runtime. It inc
 - Lock the intended `lark-cli` version in config to `1.0.23`.
 - Lock official `@larksuite/cli` at `1.0.23` globally for real smoke tests and in `package-lock.json` for reproducible local setup.
 - On Windows, prefer `lark-cli.cmd` from Python to avoid PowerShell execution policy blocking the `.ps1` shim.
-- On Windows, use `shell=False` for all `subprocess.run()` / `subprocess.Popen()` calls that execute `lark-cli.cmd`. Using `shell=True` passes the command through `cmd.exe /c`, which has two critical defects: (1) `cmd.exe` strips leading/trailing quotes when the command line contains more than two quote characters, corrupting the executable path when `--content` passes JSON with embedded double quotes; (2) `cmd.exe /c` has an 8,191-character command line limit versus `CreateProcessW()`'s 32,768-character limit. With `shell=False`, `CreateProcessW()` automatically delegates `.cmd` files to `cmd.exe` without going through the `/c` quoting trap. The `LarkCliError` message includes the resolved executable path for diagnostics.
+- On Windows, prefer the native `lark-cli.exe` binary over the `.cmd` npm shim. When `find_lark_cli_executable()` locates a `.cmd` shim, it resolves the corresponding `.exe` from `<shim_dir>/../@larksuite/cli/bin/lark-cli.exe` and uses it directly. This is necessary because `.cmd` files are always executed via `cmd.exe /c`, which strips leading/trailing quotes when the command line contains more than two quote characters — corrupting the executable path when `--content` passes JSON with embedded double quotes. Using `shell=False` does NOT avoid this trap: `CreateProcessW()` still delegates `.cmd` files to `cmd.exe /c` internally. The native `.exe` bypasses `cmd.exe` entirely, eliminating the quote-stripping issue and the 8,191-character `cmd.exe /c` command line limit. If the `.exe` is not found (e.g., global npm install without the package directory), the code falls back to the `.cmd` shim. The `LarkCliError` message includes the resolved executable path for diagnostics.
 - For `lark-cli` 1.0.23 bot event intake, use `event consume im.message.receive_v1 --as bot`, passing `--max-events` and `--timeout` when bounded runs are requested.
 - `lark-cli event consume` internally uses WebSocket long-connection (飞书长连接模式) to receive events. This means the project does NOT need a public IP, domain, or webhook callback URL — the `lark-cli` subprocess establishes a WebSocket full-duplex channel to `wss://open.feishu.cn` and streams events as NDJSON to stdout. This is the officially recommended approach per the 2026-05 Feishu open platform announcement. Constraints: 3-second event processing timeout (mitigated by immediate confirmation reply), cluster mode (no broadcast, single-client only), enterprise self-built apps only, max 50 connections per app.
 - `devflow start` also uses `event consume im.message.receive_v1 --as bot`, with `--once` for demos/tests and no default timeout for continuous listening.
@@ -144,3 +144,50 @@ Pipeline run records include an `audit` section pointing to the trace path and, 
 - Delivery v1 is package-only. It does not create branches, commits, pushes, or PRs; it records the evidence and readiness needed for a human to merge or decide the next Git action.
 - `devflow start` is a useful long-running CLI process, but production-grade daemon supervision and REST lifecycle controls are still deferred.
 - Semantic indexing v1 uses heuristic call-target resolution (no type system), so cross-file call accuracy is approximately 70-80%. Tree-sitter is optional; when not installed, JS/TS files are skipped with UNAVAILABLE status. The index is stored as flat JSON rather than a database, which is sufficient for workspaces under ~1000 files. Cross-file symbol resolution and type-aware call analysis are deferred to v2.
+
+## Competitor Landscape
+
+### Confirmed same-track project: Celia-veey/orchestration-engine
+
+- **Repository**: https://github.com/Celia-veey/orchestration-engine
+- **Track**: 飞书 AI 产品创新赛道 · 课题三（confirmed via `main_api.py` title "DevFlow Engine API" + `COLLABORATION_GUIDE.md`)
+- **Team**: 2+ people (Celia-veey + zegator), with Role A (engine architect) and Role B (AI/prompt engineer) split
+- **Pipeline**: 6-stage state machine (requirement_analysis → architecture_design → human_approval_1 → code_generation → test_generation → code_review → human_approval_2 → delivery), self-implemented (not LangGraph)
+- **Agent design**: Mock + Real dual mode; Mock agents read fixed templates from `skills/*/SKILL.md`, Real agents call LLM with `Multi-Agents/skills/*/SKILL.md` prompts
+- **LLM client**: OpenAI-compatible only, no runtime provider switching, JSON output via `<json_output>` tag + 3-layer fallback parsing
+- **Context model**: Pydantic monolithic `PipelineContext` (~30 fields in one class, `extra="allow"`)
+- **Approval**: `asyncio.Event` async wait + `POST /pipeline/{id}/approve` API; no Feishu approval integration
+- **API**: FastAPI + uvicorn, async, 5 endpoints, auto-generated Swagger UI
+- **Reference docs**: 13 industry-standard documents (EARS, ADR, NFR, API design, etc.) loaded on-demand with 2000-char truncation
+- **Requirement clarification**: PM Agent multi-round dialogue (max 3 rounds), structured questions with options/defaults/impact
+- **Stage metrics**: Per-stage timing via `stage_start_time` dict
+- **Logging**: Unified dual-output (file + console) logger per pipeline run
+- **Skill management**: `SkillManager` with lazy loading (4KB YAML header scan at startup, full content on first use, cached thereafter)
+
+### Another same-track project: huang-zirun/lark-agent
+
+- **Repository**: https://github.com/huang-zirun/lark-agent
+- **Track**: Explicitly labeled "飞书 AI 产品创新赛道 - 课题三：基于 AI 驱动的需求交付流程引擎"
+- **Pipeline**: 8 stages, 2 checkpoints, 7 structured artifacts
+- **Tech stack**: Python FastAPI + SQLAlchemy (async) + SQLite backend, React 18 + Ant Design frontend
+- **Differentiation**: Provider registry center, SQLAlchemy ORM persistence, Ant Design UI
+
+### Competitive advantages of this project vs orchestration-engine
+
+1. **Feishu native integration depth**: lark-cli WebSocket + Feishu approval + PRD auto-creation + interactive cards (opponent has zero Feishu integration)
+2. **AST semantic indexing**: Agents understand codebase structure directly (opponent relies on reference document templates)
+3. **Safe auto-repair boundary**: 1 auto-retry + human fallback (opponent uses max_retries=3 unbounded loop)
+4. **LangGraph orchestration**: Graph visualization, conditional edges, native checkpoint recovery (opponent uses hand-rolled state machine)
+5. **Observability**: Real-time dashboard + interactive API docs (opponent has none)
+6. **Multi-provider runtime switching**: 5 built-in providers + custom (opponent is single-provider only)
+
+### Gaps to address (from competitor analysis)
+
+1. **Mock Agent layer**: orchestration-engine has complete Mock agents for zero-cost pipeline walkthrough; this project only has `--analyzer heuristic` for intake stage. Adding `--mock` global flag would enable zero-token demo runs.
+2. **Requirement clarification dialogue**: orchestration-engine's PM Agent does up to 3 rounds of structured clarification with options/defaults/impact before proceeding; this project does one-shot analysis.
+3. **Reference document system**: orchestration-engine has 13 industry-standard docs (EARS, ADR, NFR, etc.) injected into Architect and Reviewer agents; this project has no equivalent.
+4. **Stage timing metrics**: orchestration-engine tracks per-stage duration; this project only has overall start/end timestamps.
+5. **Unified logging**: orchestration-engine has structured dual-output logging; this project uses per-agent print statements.
+6. **asyncio.Event approval**: More elegant than file-polling for API-driven workflows.
+
+Detailed analysis: `journey/research/2026-05-06-orchestration-engine-competitor-analysis.md`

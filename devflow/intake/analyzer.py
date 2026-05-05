@@ -17,6 +17,22 @@ MAX_TOP_LEVEL_SUMMARY_CHARS = 600
 SECTION_CHUNK_CHARS = 2800
 
 
+def _load_reference_docs_for_intake() -> list[dict[str, Any]]:
+    try:
+        from devflow.config import load_config, ReferenceConfig
+        from devflow.references.registry import ReferenceRegistry
+        config = load_config()
+        if not config.reference.enabled:
+            return []
+        registry = ReferenceRegistry()
+        return registry.get_documents_for_stage(
+            "requirement_intake",
+            max_total_chars=config.reference.max_chars_per_stage,
+        )
+    except Exception:
+        return []
+
+
 def build_requirement_artifact(
     source: RequirementSource,
     model: str = "heuristic-local-v1",
@@ -171,7 +187,7 @@ def analyze_with_llm(
         },
         {
             "role": "user",
-            "content": build_llm_user_prompt(source, content, sections),
+            "content": build_llm_user_prompt(source, content, sections, reference_documents=_load_reference_docs_for_intake()),
         },
     ]
     if stage_trace is not None:
@@ -223,6 +239,7 @@ def build_llm_user_prompt(
     source: RequirementSource,
     content: str,
     sections: list[dict[str, Any]],
+    reference_documents: list[dict[str, Any]] | None = None,
 ) -> str:
     section_index = [
         {
@@ -248,7 +265,8 @@ def build_llm_user_prompt(
         f"来源 ID: {source.source_id}\n"
         f"来源标题: {source.title or ''}\n"
         f"Section 索引 JSON: {section_index}\n\n"
-        "来源 Markdown:\n"
+        + _ref_docs_json(reference_documents) + "\n\n"
+        + "来源 Markdown:\n"
         f"{content}"
     )
 
@@ -647,6 +665,13 @@ def summarize(text: str, limit: int) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _ref_docs_json(docs: list[dict[str, Any]] | None) -> str:
+    if not docs:
+        return "参考文档: []"
+    import json
+    return f"参考文档: {json.dumps(docs, ensure_ascii=False, indent=2)}"
 
 
 def clean_line(line: str) -> str:

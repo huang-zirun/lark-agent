@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from devflow.config import LlmConfig
+from devflow.config import LlmConfig, ReferenceConfig
 from devflow.llm import LlmError, UrlOpen, base_url_host, chat_completion, parse_llm_json
 from devflow.solution.models import AGENT_NAME, AGENT_VERSION, SCHEMA_VERSION
 from devflow.solution.prompt import SOLUTION_DESIGN_ARCHITECT_PROMPT
@@ -97,9 +97,10 @@ def build_solution_design_artifact(
     requirement_path: Path | str | None = None,
     stage_trace: "StageTrace | None" = None,
     opener: UrlOpen | None = None,
+    reference_config: "ReferenceConfig | None" = None,
 ) -> dict[str, Any]:
     validate_requirement_artifact(requirement)
-    codebase_context = build_codebase_context(Path(workspace["path"]))
+    codebase_context = build_codebase_context(Path(workspace["path"]), reference_config=reference_config)
     if stage_trace is not None:
         stage_trace.event(
             "codebase_context_built",
@@ -195,6 +196,7 @@ def build_solution_design_user_prompt(
                 for item in codebase_context.get("files", [])[:40]
             ],
         },
+        "reference_documents": codebase_context.get("reference_documents", []),
     }
     return (
         "请基于下面 JSON 输出技术方案，只返回一个 JSON object。\n"
@@ -316,6 +318,10 @@ def build_solution_payload(
                 "claw-code-main PROJECT_ANALYSIS.md design principles",
             ],
         },
+        "reference_documents_used": [
+            {"name": doc.get("name"), "title": doc.get("title"), "chars_injected": len(doc.get("content", ""))}
+            for doc in codebase_context.get("reference_documents", [])
+        ],
     }
 
 

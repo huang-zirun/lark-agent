@@ -21,10 +21,16 @@ CODE_GENERATION_SYSTEM_PROMPT = """你是 DevFlow 的 CodeGenerationAgent。
 - glob_search: {"pattern":"glob模式"}
 - grep_search: {"pattern":"正则表达式","glob":"文件模式"}
 - powershell: {"command":"命令","timeout_seconds":60}
+
+参考文档使用：
+- 输入中包含 reference_documents 字段，提供代码规范和配置管理参考。
+- 在编写提交信息时遵循 Conventional Commits 格式。
+- 在管理配置和环境变量时遵循 12-Factor App 原则。
+- 参考文档是指导性建议，需结合项目实际情况灵活应用。
 """
 
 
-def build_code_generation_user_prompt(solution: dict[str, Any], tool_events: list[dict[str, Any]]) -> str:
+def build_code_generation_user_prompt(solution: dict[str, Any], tool_events: list[dict[str, Any]], reference_documents: list[dict[str, Any]] | None = None) -> str:
     payload = {
         "solution": {
             "workspace": solution.get("workspace"),
@@ -36,6 +42,7 @@ def build_code_generation_user_prompt(solution: dict[str, Any], tool_events: lis
             "code_review_feedback": solution.get("code_review_feedback"),
         },
         "tool_events": tool_events[-20:],
+        "reference_documents": reference_documents or [],
         "instruction": "根据方案继续下一步。需要文件内容时先 read_file 或 grep_search；完成后返回 finish。",
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)

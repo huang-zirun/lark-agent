@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from devflow.config import SemanticConfig, WorkspaceConfig
+from devflow.config import ReferenceConfig, SemanticConfig, WorkspaceConfig
 
 
 EXCLUDED_DIRECTORIES = [
@@ -94,6 +94,7 @@ def build_codebase_context(
     max_chars_per_file: int = 2000,
     max_total_chars: int = 20000,
     semantic_config: SemanticConfig | None = None,
+    reference_config: ReferenceConfig | None = None,
 ) -> dict[str, Any]:
     root_path = Path(root).resolve()
     files: list[dict[str, Any]] = []
@@ -157,6 +158,20 @@ def build_codebase_context(
         except Exception as exc:
             semantic_summary = {"status": "unavailable", "error": str(exc)}
 
+    reference_documents: list[dict[str, Any]] = []
+    effective_ref_config = reference_config or ReferenceConfig()
+    if effective_ref_config.enabled:
+        try:
+            from devflow.references.registry import ReferenceRegistry
+
+            registry = ReferenceRegistry()
+            reference_documents = registry.get_documents_for_stage(
+                "solution_design",
+                max_total_chars=effective_ref_config.max_chars_per_stage,
+            )
+        except Exception:
+            reference_documents = []
+
     return {
         "root": str(root_path),
         "excluded_directories": EXCLUDED_DIRECTORIES,
@@ -169,6 +184,7 @@ def build_codebase_context(
         "semantic_summary": semantic_summary,
         "semantic_symbols": semantic_symbols,
         "semantic_relations_count": semantic_relations_count,
+        "reference_documents": reference_documents,
     }
 
 
