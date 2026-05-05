@@ -51,6 +51,10 @@ class LlmTests(unittest.TestCase):
             "https://api.deepseek.com",
         )
         self.assertEqual(
+            resolve_base_url(LlmConfig(provider="mimo")),
+            "https://api.xiaomimimo.com/v1",
+        )
+        self.assertEqual(
             resolve_base_url(LlmConfig(provider="openai")),
             "https://api.openai.com/v1",
         )
