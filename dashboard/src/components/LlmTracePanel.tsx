@@ -21,6 +21,7 @@ import type { LlmCallRecord } from "@/hooks/useRunDetail";
 interface LlmTracePanelProps {
   llmCalls: LlmCallRecord[] | null;
   loading: boolean;
+  selectedStage: string | null;
 }
 
 const STAGE_DISPLAY_NAMES: Record<string, string> = {
@@ -173,13 +174,18 @@ function LlmCallItem({
             </div>
           </div>
 
-          <div className="flex items-center justify-between text-xs text-muted-foreground pt-1">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground pt-1">
             <span>
               调用耗时: <span className="font-mono">{record.duration_ms != null ? formatDuration(record.duration_ms) : "-"}</span>
             </span>
             <span>
               Provider: <span className="font-mono">{record.provider ?? "-"}</span>
             </span>
+            {record.model && (
+              <span>
+                模型: <span className="font-mono">{record.model}</span>
+              </span>
+            )}
           </div>
         </div>
       </CollapsibleContent>
@@ -187,11 +193,15 @@ function LlmCallItem({
   );
 }
 
-export function LlmTracePanel({ llmCalls, loading }: LlmTracePanelProps) {
+export function LlmTracePanel({ llmCalls, loading, selectedStage }: LlmTracePanelProps) {
+  const filteredCalls = selectedStage
+    ? llmCalls?.filter(c => c.stage === selectedStage || selectedStage.startsWith(c.stage) || c.stage.startsWith(selectedStage))
+    : llmCalls;
+
   const grouped = (() => {
-    if (!llmCalls) return [];
+    if (!filteredCalls) return [];
     const map = new Map<string, LlmCallRecord[]>();
-    for (const call of llmCalls) {
+    for (const call of filteredCalls) {
       const existing = map.get(call.stage) || [];
       existing.push(call);
       map.set(call.stage, existing);
@@ -221,7 +231,7 @@ export function LlmTracePanel({ llmCalls, loading }: LlmTracePanelProps) {
                 />
               ))}
             </div>
-          ) : !llmCalls || llmCalls.length === 0 ? (
+          ) : !filteredCalls || filteredCalls.length === 0 ? (
             <div className="p-12 text-center text-muted-foreground">
               <Cpu className="h-8 w-8 mx-auto mb-2 opacity-50" />
               <p className="text-sm">本阶段无 LLM 调用</p>

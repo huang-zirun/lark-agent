@@ -4,6 +4,7 @@ import type {
   ArtifactSummary,
   CheckpointRecord,
   TokenSummary,
+  LlmCallRecord,
 } from "@/hooks/useRunDetail";
 import { useRunDiff } from "@/hooks/useRunDetail";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -94,6 +95,7 @@ interface StageDetailPanelProps {
   delivery: Record<string, unknown> | null;
   selectedStage: string | null;
   runId: string | null;
+  llmCalls: LlmCallRecord[] | null;
   onArtifactViewDetail: (stage: string) => void;
   onDiffView: (type: string) => void;
 }
@@ -106,6 +108,7 @@ export function StageDetailPanel({
   delivery: _delivery,
   selectedStage,
   runId,
+  llmCalls,
   onArtifactViewDetail,
   onDiffView: _onDiffView,
 }: StageDetailPanelProps) {
@@ -166,6 +169,25 @@ export function StageDetailPanel({
                         <span>{formatDuration(stage.duration_ms)}</span>
                       </div>
                     )}
+                    {tokenInfo?.model && (
+                      <div className="flex items-center gap-2">
+                        <Cpu className="h-3.5 w-3.5 text-muted-foreground" />
+                        <span className="text-muted-foreground">模型</span>
+                        <span className="font-mono text-xs">{tokenInfo.model}</span>
+                      </div>
+                    )}
+                    {(() => {
+                      const stageLlmDuration = llmCalls
+                        ?.filter(c => c.stage === stage.name || stage.name.startsWith(c.stage) || c.stage.startsWith(stage.name))
+                        .reduce((sum, c) => sum + (c.duration_ms ?? 0), 0);
+                      return stageLlmDuration && stageLlmDuration > 0 ? (
+                        <div className="flex items-center gap-2">
+                          <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+                          <span className="text-muted-foreground">LLM 耗时</span>
+                          <span>{formatDuration(stageLlmDuration)}</span>
+                        </div>
+                      ) : null;
+                    })()}
                     {tokenInfo && (
                       <>
                         <div className="flex items-center gap-2">
@@ -194,6 +216,7 @@ export function StageDetailPanel({
                 <ArtifactCard
                   stage={stage.name}
                   artifact={artifact}
+                  runId={runId}
                   onViewDetail={() => onArtifactViewDetail(stage.name)}
                 />
               )}

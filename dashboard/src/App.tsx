@@ -20,7 +20,8 @@ function App() {
   const { data: activeRun, loading: activeLoading } = useActiveRun();
   const { data: runList, loading: listLoading, refetch: refetchList } = useRunList();
   const { data: runDetail, loading: detailLoading, refetch: refetchDetail } = useRunDetail(selectedRunId);
-  const { data: llmCalls, loading: llmLoading } = useRunLlmTrace(selectedRunId);
+  const isActive = runDetail?.run?.status === "running" || runDetail?.run?.status === "paused";
+  const { data: llmCalls, loading: llmLoading } = useRunLlmTrace(selectedRunId, isActive);
 
   useEffect(() => {
     if (activeLoading || listLoading) return;
@@ -85,13 +86,14 @@ function App() {
             delivery={runDetail?.delivery ?? null}
             selectedStage={selectedStage}
             runId={selectedRunId}
+            llmCalls={llmCalls}
             onArtifactViewDetail={() => {}}
             onDiffView={() => {}}
           />
         </main>
         {!rightPanelCollapsed && (
           <div className="w-[360px] shrink-0 border-l border-border overflow-y-auto">
-            <LlmTracePanel llmCalls={llmCalls} loading={llmLoading} />
+            <LlmTracePanel llmCalls={llmCalls} loading={llmLoading} selectedStage={selectedStage} />
           </div>
         )}
       </div>

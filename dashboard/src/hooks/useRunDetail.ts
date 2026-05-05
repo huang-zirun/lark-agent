@@ -44,6 +44,7 @@ export interface TokenStageInfo {
   completion_tokens: number;
   total_tokens: number;
   provider?: string;
+  model?: string;
 }
 
 export interface TokenSummary {
@@ -59,6 +60,7 @@ export interface LlmCallRecord {
   usage: Record<string, number> | null;
   duration_ms: number | null;
   provider: string | null;
+  model: string | null;
 }
 
 export interface RunDetail {
@@ -104,7 +106,7 @@ export function useRunList(limit = 20) {
 
   useEffect(() => {
     fetchData();
-    const id = setInterval(fetchData, 10000);
+    const id = setInterval(fetchData, 5000);
     return () => clearInterval(id);
   }, [fetchData]);
 
@@ -134,7 +136,7 @@ export function useRunDetail(runId: string | null) {
     fetchData();
     if (!runId) return;
     const isRunning = data?.run?.status === "running" || data?.run?.status === "paused";
-    const interval = isRunning ? 3000 : 10000;
+    const interval = isRunning ? 2000 : 10000;
     const id = setInterval(fetchData, interval);
     return () => clearInterval(id);
   }, [fetchData, runId, data?.run?.status]);
@@ -142,20 +144,60 @@ export function useRunDetail(runId: string | null) {
   return { data, loading, refetch: fetchData };
 }
 
-export function useRunLlmTrace(runId: string | null) {
+export function useRunArtifactMarkdown(runId: string | null, stage: string | null) {
+  const [data, setData] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const fetchData = useCallback(async () => {
+    if (!runId || !stage) return;
+    setLoading(true);
+    try {
+      const result = await fetchJson<{ content: string | null }>(
+        `/api/v1/metrics/runs/${runId}/artifact-markdown?stage=${stage}`
+      );
+      setData(result.content);
+    } catch {
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [runId, stage]);
+
+  useEffect(() => {
+    fetchData();
+    if (!runId || !stage) return;
+    const id = setInterval(fetchData, 3000);
+    return () => clearInterval(id);
+  }, [fetchData, runId, stage]);
+
+  return { data, loading, refetch: fetchData };
+}
+
+export function useRunLlmTrace(runId: string | null, isActive: boolean = false) {
   const [data, setData] = useState<LlmCallRecord[] | null>(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
+  const fetchData = useCallback(async () => {
     if (!runId) return;
     setLoading(true);
-    fetchJson<{ llm_trace: LlmCallRecord[] }>(`/api/v1/metrics/runs/${runId}/llm-trace`)
-      .then((r) => setData(r.llm_trace))
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
+    try {
+      const r = await fetchJson<{ llm_trace: LlmCallRecord[] }>(`/api/v1/metrics/runs/${runId}/llm-trace`);
+      setData(r.llm_trace);
+    } catch {
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
   }, [runId]);
 
-  return { data, loading };
+  useEffect(() => {
+    fetchData();
+    if (!runId || !isActive) return;
+    const id = setInterval(fetchData, 3000);
+    return () => clearInterval(id);
+  }, [fetchData, runId, isActive]);
+
+  return { data, loading, refetch: fetchData };
 }
 
 export function useRunDiff(runId: string | null, type: string) {
