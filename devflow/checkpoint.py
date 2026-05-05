@@ -369,6 +369,7 @@ def build_code_review_card(
     review_path: Path | str,
     review_markdown_path: Path | str,
     review_doc_url: str | None = None,
+    has_approval_instance: bool = False,
 ) -> dict[str, Any]:
     run_id = run_payload["run_id"]
     gate = _dict(review_artifact.get("quality_gate"))
@@ -395,6 +396,7 @@ def build_code_review_card(
         if review_doc_url
         else f"完整评审报告发布失败，请查看本地产物：`{review_markdown_path_text}`"
     )
+    approval_hint = "\n也可在飞书「审批」应用中处理。" if has_approval_instance else ""
     body = "\n".join(
         [
             f"**运行 ID**：`{run_id}`",
@@ -408,6 +410,7 @@ def build_code_review_card(
             "",
             f"同意：`Approve {run_id}`",
             f"拒绝：`Reject {run_id}`",
+            approval_hint,
         ]
     )
     return {

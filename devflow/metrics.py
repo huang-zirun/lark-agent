@@ -269,6 +269,7 @@ def get_run_llm_trace(run_dir: Path) -> list[dict[str, Any]]:
             "usage": None,
             "duration_ms": None,
             "provider": None,
+            "model": None,
         }
         req_path = request_files.get(prefix)
         if req_path:
@@ -291,6 +292,7 @@ def get_run_llm_trace(run_dir: Path) -> list[dict[str, Any]]:
                         user_parts.append(str(content)[:500])
                 entry["system_prompt_summary"] = "; ".join(system_parts) if system_parts else None
                 entry["user_prompt_summary"] = "; ".join(user_parts) if user_parts else None
+                entry["model"] = req.get("model")
             except (OSError, json.JSONDecodeError):
                 pass
         resp_path = response_files.get(prefix)
@@ -446,19 +448,48 @@ def get_run_detail(run_dir: Path) -> dict[str, Any]:
 
     llm_calls = get_run_llm_trace(run_dir)
 
-    total_prompt = 0
-    total_completion = 0
-    total_tokens = 0
+    _prefix_to_stage = {
+        "llm": "requirement_intake",
+        "solution": "solution_design",
+        "code-generation": "code_generation",
+        "test-generation": "test_generation",
+        "code-review": "code_review",
+        "delivery": "delivery",
+    }
+    token_summary: dict[str, dict[str, Any]] = {}
     for llm_file in run_dir.glob("*-llm-response.json"):
+        prefix = llm_file.name.replace("-llm-response.json", "")
+        stage_name = _prefix_to_stage.get(prefix, prefix)
         try:
-            llm = json.loads(llm_file.read_text(encoding="utf-8-sig"))
-            usage = llm.get("usage") or {}
-            if usage:
-                total_prompt += usage.get("prompt_tokens", 0) or 0
-                total_completion += usage.get("completion_tokens", 0) or 0
-                total_tokens += usage.get("total_tokens", 0) or 0
+            resp = json.loads(llm_file.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             continue
+        usage = resp.get("usage") or {}
+        if stage_name not in token_summary:
+            token_summary[stage_name] = {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "provider": None,
+                "model": None,
+            }
+        entry = token_summary[stage_name]
+        if usage:
+            entry["prompt_tokens"] += usage.get("prompt_tokens", 0) or 0
+            entry["completion_tokens"] += usage.get("completion_tokens", 0) or 0
+            entry["total_tokens"] += usage.get("total_tokens", 0) or 0
+        provider = resp.get("usage_source")
+        if provider:
+            entry["provider"] = provider
+        req_path = run_dir / f"{prefix}-llm-request.json"
+        if req_path.exists():
+            try:
+                req = json.loads(req_path.read_text(encoding="utf-8-sig"))
+                model = req.get("model")
+                if model:
+                    entry["model"] = model
+            except (OSError, json.JSONDecodeError):
+                pass
 
     delivery_path = run_dir / "delivery.json"
     delivery = None
@@ -474,11 +505,7 @@ def get_run_detail(run_dir: Path) -> dict[str, Any]:
         "artifacts": get_run_artifacts(run_dir),
         "checkpoints": checkpoints,
         "llm_calls": llm_calls,
-        "token_summary": {
-            "prompt_tokens": total_prompt,
-            "completion_tokens": total_completion,
-            "total_tokens": total_tokens,
-        },
+        "token_summary": token_summary,
         "delivery": delivery,
     }
 
@@ -497,5 +524,24 @@ def get_run_diff(run_dir: Path, stage: str) -> str | None:
         return None
     try:
         return diff_path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return None
+
+
+def get_run_artifact_markdown(run_dir: Path, stage: str) -> str | None:
+    stage_map = {
+        "requirement_intake": "requirement.md",
+        "solution_design": "solution.md",
+        "code_review": "code-review.md",
+        "delivery": "delivery.md",
+    }
+    filename = stage_map.get(stage)
+    if not filename:
+        return None
+    md_path = run_dir / filename
+    if not md_path.exists():
+        return None
+    try:
+        return md_path.read_text(encoding="utf-8-sig")
     except OSError:
         return None

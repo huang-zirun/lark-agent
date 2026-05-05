@@ -34,6 +34,7 @@ from devflow.metrics import (
     compute_token_usage,
     get_active_run,
     get_recent_runs,
+    get_run_artifact_markdown,
     get_run_artifacts,
     get_run_detail,
     get_run_diff,
@@ -256,6 +257,18 @@ OPENAPI_SPEC: dict[str, Any] = {
                 "responses": {"200": {"description": "Diff 文本内容"}, "404": {"description": "未找到"}},
             },
         },
+        "/api/v1/metrics/runs/{run_id}/artifact-markdown": {
+            "get": {
+                "summary": "获取运行阶段 Markdown 产物",
+                "operationId": "getRunArtifactMarkdown",
+                "tags": ["Metrics"],
+                "parameters": [
+                    {"name": "run_id", "in": "path", "required": True, "schema": {"type": "string"}},
+                    {"name": "stage", "in": "query", "required": True, "schema": {"type": "string"}, "description": "阶段名称"},
+                ],
+                "responses": {"200": {"description": "Markdown 产物内容"}, "404": {"description": "未找到"}},
+            },
+        },
         "/api/v1/openapi.json": {
             "get": {
                 "summary": "OpenAPI 规范文档",
@@ -368,6 +381,7 @@ _ROUTE_PATTERNS: list[tuple[str, str]] = [
     ("GET", r"^/api/v1/metrics/runs/([^/]+)/llm-trace$"),
     ("GET", r"^/api/v1/metrics/runs/([^/]+)/artifacts$"),
     ("GET", r"^/api/v1/metrics/runs/([^/]+)/diff$"),
+    ("GET", r"^/api/v1/metrics/runs/([^/]+)/artifact-markdown$"),
     ("GET", r"^/dashboard$"),
     ("GET", r"^/dashboard/assets/(.+)$"),
     ("GET", r"^/api/v1/openapi\.json$"),
@@ -493,6 +507,9 @@ class DevFlowApiHandler(BaseHTTPRequestHandler):
             return
         if pattern == r"^/api/v1/metrics/runs/([^/]+)/diff$" and method == "GET":
             self._handle_metrics_run_diff(run_id)
+            return
+        if pattern == r"^/api/v1/metrics/runs/([^/]+)/artifact-markdown$" and method == "GET":
+            self._handle_metrics_run_artifact_markdown(run_id)
             return
         if pattern == r"^/dashboard$" and method == "GET":
             self._handle_dashboard()
@@ -804,6 +821,20 @@ class DevFlowApiHandler(BaseHTTPRequestHandler):
             self._json_response(404, {"error": f"未找到 Diff：{diff_type}"})
             return
         self._json_response(200, {"type": diff_type, "content": content})
+
+    def _handle_metrics_run_artifact_markdown(self, run_id: str) -> None:
+        run_dir = self.out_dir / run_id
+        if not (run_dir / "run.json").exists():
+            self._json_response(404, {"error": f"未找到运行：{run_id}"})
+            return
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        stage = params.get("stage", [None])[0]
+        if not stage:
+            self._json_response(400, {"error": "缺少 stage 查询参数"})
+            return
+        content = get_run_artifact_markdown(run_dir, stage)
+        self._json_response(200, {"stage": stage, "content": content})
 
     def _handle_dashboard(self) -> None:
         dist_dir = Path(__file__).parent / "dashboard" / "dist"

@@ -14,6 +14,26 @@ class ApprovalError(RuntimeError):
     """Raised when approval operations fail."""
 
 
+_STAGE_APPROVAL_CONFIG: dict[str, dict[str, str]] = {
+    "solution_design": {
+        "default_code": "devflow-solution-review",
+        "title": "DevFlow 技术方案评审",
+        "instance_title": "技术方案评审",
+        "task_title": "请审批技术方案",
+        "doc_label": "方案文档",
+        "summary_label": "方案摘要",
+    },
+    "code_review": {
+        "default_code": "devflow-code-review",
+        "title": "DevFlow 代码评审",
+        "instance_title": "代码评审",
+        "task_title": "请审批代码评审",
+        "doc_label": "评审报告",
+        "summary_label": "评审摘要",
+    },
+}
+
+
 @dataclass(frozen=True, slots=True)
 class ApprovalInstanceResult:
     instance_code: str
@@ -44,11 +64,12 @@ def _run_lark_api(method: str, path: str, payload: dict[str, Any] | None = None)
     return response.get("data") or {}
 
 
-def ensure_approval_definition(
+def ensure_stage_approval_definition(
+    stage: str,
     approval_code_hint: str | None = None,
     user_open_id: str | None = None,
 ) -> str:
-    """Ensure a Lark approval definition exists for DevFlow solution review.
+    """Ensure a Lark approval definition exists for the given DevFlow stage.
 
     If approval_code_hint is provided and valid, return it directly.
     Otherwise, create a new external (third-party) approval definition
@@ -57,16 +78,15 @@ def ensure_approval_definition(
     The external approval definition does NOT require admin console setup.
     It is created programmatically and shows up in the user's approval app.
     """
+    stage_cfg = _STAGE_APPROVAL_CONFIG.get(stage, _STAGE_APPROVAL_CONFIG["solution_design"])
     if approval_code_hint:
-        # Validate the existing definition by querying it
         try:
             _run_lark_api("GET", f"/open-apis/approval/v4/approvals/{approval_code_hint}")
             return approval_code_hint
         except ApprovalError:
-            pass  # Invalid or inaccessible, create a new one
+            pass
 
-    # Generate a stable custom approval code for DevFlow
-    custom_code = approval_code_hint or "devflow-solution-review"
+    custom_code = approval_code_hint or stage_cfg["default_code"]
 
     i18n_key_name = f"@i18n@{uuid.uuid4().hex[:8]}"
     i18n_key_group = f"@i18n@{uuid.uuid4().hex[:8]}"
@@ -94,7 +114,7 @@ def ensure_approval_definition(
                 "texts": [
                     {
                         "key": i18n_key_name,
-                        "value": "DevFlow 技术方案评审",
+                        "value": stage_cfg["title"],
                     },
                     {
                         "key": i18n_key_group,
@@ -112,19 +132,38 @@ def ensure_approval_definition(
     return approval_code
 
 
-def create_external_approval_instance(
+def ensure_approval_definition(
+    approval_code_hint: str | None = None,
+    user_open_id: str | None = None,
+) -> str:
+    """Ensure a Lark approval definition exists for DevFlow solution review.
+
+    Backward-compatible wrapper around ensure_stage_approval_definition().
+    """
+    return ensure_stage_approval_definition(
+        stage="solution_design",
+        approval_code_hint=approval_code_hint,
+        user_open_id=user_open_id,
+    )
+
+
+def create_stage_approval_instance(
     approval_code: str,
     user_open_id: str,
     run_id: str,
+    stage: str,
     summary: str,
     risk_level: str,
-    solution_markdown_path: str,
+    doc_path: str,
+    form_fields: list[dict[str, str]] | None = None,
 ) -> str:
-    """Create a third-party approval instance and return its instance_id.
+    """Create a third-party approval instance for the given stage and return its instance_id.
 
     Uses lark-cli api bare call for POST /open-apis/approval/v4/external_instances.
     """
     import time
+
+    stage_cfg = _STAGE_APPROVAL_CONFIG.get(stage, _STAGE_APPROVAL_CONFIG["solution_design"])
 
     i18n_key_title = f"@i18n@{uuid.uuid4().hex[:8]}"
     i18n_key_summary = f"@i18n@{uuid.uuid4().hex[:8]}"
@@ -137,6 +176,15 @@ def create_external_approval_instance(
     now_ms = str(int(time.time() * 1000))
     instance_id = f"devflow-{run_id}"
 
+    form: list[dict[str, str]] = [
+        {"name": i18n_key_summary, "value": summary},
+        {"name": i18n_key_risk, "value": f"风险等级：{risk_level}"},
+        {"name": i18n_key_doc, "value": doc_path},
+    ]
+    if form_fields:
+        for field in form_fields:
+            form.append(field)
+
     payload: dict[str, Any] = {
         "approval_code": approval_code,
         "status": "PENDING",
@@ -148,11 +196,7 @@ def create_external_approval_instance(
         "display_method": "SIDEBAR",
         "update_mode": "REPLACE",
         "title": i18n_key_title,
-        "form": [
-            {"name": i18n_key_summary, "value": summary},
-            {"name": i18n_key_risk, "value": f"风险等级：{risk_level}"},
-            {"name": i18n_key_doc, "value": solution_markdown_path},
-        ],
+        "form": form,
         "task_list": [
             {
                 "task_id": f"task-{run_id}",
@@ -188,11 +232,11 @@ def create_external_approval_instance(
                 "locale": "zh-CN",
                 "is_default": True,
                 "texts": [
-                    {"key": i18n_key_title, "value": f"技术方案评审 - {run_id}"},
-                    {"key": i18n_key_summary, "value": "方案摘要"},
+                    {"key": i18n_key_title, "value": f"{stage_cfg['instance_title']} - {run_id}"},
+                    {"key": i18n_key_summary, "value": stage_cfg["summary_label"]},
                     {"key": i18n_key_risk, "value": "风险等级"},
-                    {"key": i18n_key_doc, "value": "方案文档"},
-                    {"key": i18n_key_task, "value": "请审批技术方案"},
+                    {"key": i18n_key_doc, "value": stage_cfg["doc_label"]},
+                    {"key": i18n_key_task, "value": stage_cfg["task_title"]},
                     {"key": i18n_key_approve, "value": "同意"},
                     {"key": i18n_key_reject, "value": "拒绝"},
                 ],
@@ -206,6 +250,29 @@ def create_external_approval_instance(
     if not returned_instance_id:
         raise ApprovalError("同步三方审批实例成功但未返回 instance_id。")
     return returned_instance_id
+
+
+def create_external_approval_instance(
+    approval_code: str,
+    user_open_id: str,
+    run_id: str,
+    summary: str,
+    risk_level: str,
+    solution_markdown_path: str,
+) -> str:
+    """Create a third-party approval instance for solution review and return its instance_id.
+
+    Backward-compatible wrapper around create_stage_approval_instance().
+    """
+    return create_stage_approval_instance(
+        approval_code=approval_code,
+        user_open_id=user_open_id,
+        run_id=run_id,
+        stage="solution_design",
+        summary=summary,
+        risk_level=risk_level,
+        doc_path=solution_markdown_path,
+    )
 
 
 def get_external_approval_instance(approval_code: str, instance_id: str) -> dict[str, Any]:
@@ -367,6 +434,23 @@ def build_solution_review_form(
         {"id": "summary", "type": "textarea", "value": summary},
         {"id": "risk_level", "type": "input", "value": risk_level},
         {"id": "solution_doc", "type": "textarea", "value": solution_markdown_path},
+    ]
+
+
+def build_code_review_form(
+    run_id: str,
+    summary: str,
+    risk_level: str,
+    blocking_count: int,
+    review_doc_path: str,
+) -> list[dict[str, Any]]:
+    """Build approval form controls for a code review."""
+    return [
+        {"id": "run_id", "type": "input", "value": run_id},
+        {"id": "summary", "type": "textarea", "value": summary},
+        {"id": "risk_level", "type": "input", "value": risk_level},
+        {"id": "blocking_count", "type": "input", "value": str(blocking_count)},
+        {"id": "review_doc", "type": "textarea", "value": review_doc_path},
     ]
 
 

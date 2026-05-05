@@ -1274,6 +1274,7 @@ def approve_checkpoint_run(
             Path(existing_payload["requirement_artifact"]) if existing_payload.get("requirement_artifact") else None,
             Path(existing_payload["solution_artifact"]) if existing_payload.get("solution_artifact") else None,
         )
+    _sync_approval_instance_if_needed(run_dir, checkpoint, "APPROVED")
     run_payload = load_run_payload(run_dir)
     run_payload["checkpoint_status"] = checkpoint["status"]
     run_payload["checkpoint_artifact"] = str(run_dir / "checkpoint.json")
@@ -1771,6 +1772,117 @@ def run_delivery_after_code_review_approval(
         raise
 
 
+def _resolve_sender_id(
+    run_payload: dict[str, Any],
+    event_source: RequirementSource | None,
+) -> str:
+    if event_source is not None:
+        return event_source.metadata.get("sender_id") or ""
+    trigger = run_payload.get("trigger") if isinstance(run_payload.get("trigger"), dict) else {}
+    return trigger.get("sender_id") or ""
+
+
+def _sync_approval_instance_if_needed(
+    run_dir: Path,
+    checkpoint: dict[str, Any],
+    status: str,
+    *,
+    reject_reason: str | None = None,
+) -> None:
+    instance_code = checkpoint.get("approval_instance_code")
+    approval_code = checkpoint.get("approval_code")
+    if not instance_code or not approval_code:
+        return
+    try:
+        from devflow.approval_client import update_external_approval_instance
+        update_external_approval_instance(
+            approval_code=approval_code,
+            instance_id=instance_code,
+            status=status,
+            reject_reason=reject_reason,
+        )
+    except Exception:
+        pass
+
+
+def _publish_code_review_via_external_approval(
+    run_payload: dict[str, Any],
+    review_artifact: dict[str, Any],
+    *,
+    review_path: Path,
+    review_markdown_path: Path,
+    sender_id: str,
+    stage_trace: StageTrace,
+) -> None:
+    from devflow.approval_client import (
+        create_stage_approval_instance,
+        ensure_stage_approval_definition,
+    )
+
+    config = load_config()
+    approval_cfg = config.approval
+    run_id = run_payload["run_id"]
+
+    approval_code = ensure_stage_approval_definition(
+        stage="code_review",
+        approval_code_hint=approval_cfg.definition_code or None,
+        user_open_id=sender_id,
+    )
+
+    gate = review_artifact.get("quality_gate") if isinstance(review_artifact.get("quality_gate"), dict) else {}
+    summary = review_artifact.get("summary") or "代码评审已生成"
+    risk = gate.get("risk_level") or "medium"
+    blocking_count = gate.get("blocking_findings", 0)
+
+    instance_id = create_stage_approval_instance(
+        approval_code=approval_code,
+        user_open_id=sender_id,
+        run_id=run_id,
+        stage="code_review",
+        summary=summary,
+        risk_level=risk,
+        doc_path=str(review_markdown_path),
+        form_fields=[
+            {"name": "blocking_count", "value": f"阻塞问题数：{blocking_count}"},
+        ],
+    )
+
+    run_dir = Path(run_payload["run_dir"])
+    checkpoint_path = run_dir / "checkpoint.json"
+    if checkpoint_path.exists():
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8-sig"))
+        checkpoint["approval_instance_code"] = instance_id
+        checkpoint["approval_code"] = approval_code
+        checkpoint["status"] = "waiting_approval"
+        write_checkpoint(run_dir, checkpoint)
+        run_payload["checkpoint_artifact"] = str(checkpoint_path)
+        run_payload["checkpoint_status"] = checkpoint["status"]
+
+    run_payload["approval_instance_code"] = instance_id
+    run_payload["approval_code"] = approval_code
+    run_payload["checkpoint_publication"] = {"status": "success", "channel": "external_approval"}
+    stage_trace.event("code_review_approval_creation_completed", status="success", payload={"instance_id": instance_id, "approval_code": approval_code})
+
+    message_id = str((run_payload.get("trigger") or {}).get("message_id") or "")
+    if message_id:
+        sender = send_bot_reply
+        approval_msg = (
+            f"代码评审已生成，已为你发起审批「代码评审 - {run_id}」。\n"
+            f"请在飞书「审批」应用中查看并处理。\n"
+            f"运行 ID：{run_id}\n"
+            f"评审报告：{review_markdown_path}"
+        )
+        try:
+            sender(
+                message_id,
+                approval_msg,
+                _idempotency_key(run_id, "code-review-approval-notify"),
+            )
+            stage_trace.event("code_review_approval_notification_sent", status="success")
+        except LarkCliError as exc:
+            stage_trace.event("code_review_approval_notification_failed", status="failed", payload={"error": str(exc)})
+
+
 def publish_code_review_checkpoint(
     run_payload: dict[str, Any],
     review_artifact: dict[str, Any],
@@ -1779,6 +1891,7 @@ def publish_code_review_checkpoint(
     review_markdown_path: Path,
     stage_trace: StageTrace,
     card_reply_sender: CardReplySender | None = None,
+    event_source: RequirementSource | None = None,
 ) -> None:
     run_dir = Path(run_payload["run_dir"])
     checkpoint_path = run_dir / "checkpoint.json"
@@ -1804,10 +1917,28 @@ def publish_code_review_checkpoint(
     run_payload["checkpoint_stage"] = checkpoint["stage"]
     run_payload["checkpoint_publication"] = {"status": "local", "channel": "artifact"}
 
+    config = load_config()
+    approval_cfg = config.approval
+    sender_id = _resolve_sender_id(run_payload, event_source)
+
+    if approval_cfg.enabled and sender_id:
+        try:
+            stage_trace.event("code_review_approval_creation_attempted", status="running")
+            _publish_code_review_via_external_approval(
+                run_payload,
+                review_artifact,
+                review_path=review_path,
+                review_markdown_path=review_markdown_path,
+                sender_id=sender_id,
+                stage_trace=stage_trace,
+            )
+            return
+        except (ApprovalError, ConfigError, LarkCliError) as exc:
+            stage_trace.event("code_review_approval_creation_failed", status="failed", payload={"error": str(exc)})
+
     if card_reply_sender is not None:
         review_doc_url: str | None = None
         try:
-            config = load_config()
             folder_token = config.lark.prd_folder_token or None
             review_markdown_content = Path(review_markdown_path).read_text(encoding="utf-8")
             doc_result = publish_document(
@@ -1877,6 +2008,7 @@ def reject_checkpoint_run(
         reason=reason,
         reviewer=reviewer_from_event(event_source),
     )
+    _sync_approval_instance_if_needed(run_dir, current_checkpoint, "REJECTED", reject_reason=reason)
     if current_checkpoint.get("stage") == "code_review":
         run_payload = load_run_payload(run_dir)
         if int(run_payload.get("repair_attempts") or 0) >= 1:
