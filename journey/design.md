@@ -1,6 +1,6 @@
 # DevFlow Engine Design Snapshot
 
-Last updated: 2026-05-06 (Added competitor analysis findings from Celia-veey/orchestration-engine)
+Last updated: 2026-05-06 (Enhanced ProductRequirementAnalyst with structured scanning, user stories, input history, vague detection, quality dimensions)
 
 ## Working Rules
 
@@ -9,6 +9,17 @@ Last updated: 2026-05-06 (Added competitor analysis findings from Celia-veey/orc
 - **PowerShell Limitation**: PowerShell does not support `&&` syntax for chaining commands; use semicolon `;` or separate commands instead.
 - **Use Standard Git Commit**: follow conventional commits format (`type(scope): subject`) with clear, descriptive messages; keep commits atomic and focused.
 - **Clean Up Temporary Scripts**: delete any temporary scripts created for testing or validation purposes once verification is complete.
+
+## Karpathy 编码原则
+
+所有涉及代码编写、审查或重构的工作必须遵循以下四原则：
+
+1. **编码前思考**：不要假设，不要隐藏困惑，呈现权衡。遇到歧义时先提问而非猜测；如果存在更简单的方案，说出来。
+2. **简洁优先**：用最少的代码解决问题。不添加未要求的功能、抽象或"灵活性"。如果 200 行能写成 50 行，重写它。检验标准：资深工程师会觉得这过于复杂吗？
+3. **精准修改**：只碰必须碰的，只清理自己造成的混乱。不"改进"相邻代码或格式，不重构没坏的东西，匹配现有风格。每行修改都应能追溯到用户请求。
+4. **目标驱动执行**：定义可验证的成功标准，循环验证直到达成。将"添加验证"转化为"为无效输入写测试然后让它们通过"，将"修复 bug"转化为"写重现测试然后让它通过"。
+
+对于琐碎任务（简单拼写修复、显然的一行改动），自行判断，不必走完整严谨流程。
 
 ## Journey Memory
 
@@ -29,7 +40,10 @@ The current deliverable is a Python CLI and REST minimal DevFlow runtime. It inc
 
 - In scope: bounded reads from Feishu document URLs/tokens, specific IM messages, bounded bot event consumption, and continuous bot-driven startup through `lark-cli`.
 - In scope: a stable `devflow.requirement.v1` JSON contract with progressive disclosure sections.
-- In scope: a distilled Product Requirement Analyst prompt based on public PM skill patterns.
+- In scope: a distilled Product Requirement Analyst prompt based on public PM skill patterns, enhanced with structured scanning dimensions (7 categories: functional scope, domain model, UX flow, non-functional, external dependencies, edge cases, vague placeholders), EARS syntax examples, vague expression detection (unquantified performance/subjective evaluation/undefined scope), quality self-check instructions, and a 6-step analysis workflow (parse → infer → limit clarification marks → prioritize stories → EARS criteria → self-check).
+- In scope: structured `user_stories` in requirement artifacts with id, title, priority (P1/P2/P3), description, priority_reason, independent_test, and Given/When/Then acceptance_scenarios, replacing the flat `user_scenarios` string array while maintaining backward compatibility.
+- In scope: `input_history` in requirement artifacts for traceability, preserving raw user input verbatim with timestamp, mode, and trigger.
+- In scope: `quality.dimensions` in requirement artifacts with three-level assessment (clear/partial/missing) for content_quality, requirement_completeness, and functional_readiness, plus vague expression detection that increases ambiguity_score and generates suggested_answer/reasoning in open_questions.
 - In scope: a stable `devflow.solution_design.v1` JSON contract that combines structured requirements with bounded codebase context.
 - In scope: a stable `devflow.code_generation.v1` JSON contract that records approved solution execution, tool calls, changed files, and git diff output.
 - In scope: a stable `devflow.test_generation.v1` JSON contract that records test generation inputs, detected test stack, generated tests, command execution results, tool calls, and git diff output.
@@ -40,6 +54,7 @@ The current deliverable is a Python CLI and REST minimal DevFlow runtime. It inc
 - In scope: a `devflow.pipeline_config.v1` JSON contract for built-in stage templates, stage ordering, dependencies, and built-in agent bindings.
 - In scope: a LangGraph-backed graph runner that records `graph_state`, enforces `lifecycle_status`, and resumes approved checkpoints against the existing run directory.
 - In scope: an AST-based semantic indexing system (`devflow.semantic`) that provides structured code understanding for DevFlow agents, including symbol extraction, reference tracking, call-chain queries, and inheritance hierarchy lookup.
+- In scope: a reference document system (`devflow.references`) with 13 industry-standard documents (EARS, ADR, NFR, API design, Karpathy coding guidelines, etc.) that are injected into Agent prompts based on applicable stages, with lazy loading, character budget control, and artifact traceability.
 - In scope: interactive API documentation via Swagger UI (`/docs`) and ReDoc (`/redoc`), served as CDN-backed HTML pages that reference the existing OpenAPI 3.0.3 JSON spec at `/api/v1/openapi.json`.
 - Out of scope for this slice: full pipeline orchestration, web UI, REST API lifecycle management, and direct code generation.
 
@@ -106,6 +121,8 @@ The current deliverable is a Python CLI and REST minimal DevFlow runtime. It inc
   - `POST /open-apis/approval/v4/instances` and `GET /open-apis/approval/v4/instances/:id` — legacy native approval (kept for backward compatibility)
   lark-cli 1.0.23 does not wrap these endpoints in its `approval` service. The `approval` service only exposes `instances.get`, `instances.cancel`, `instances.cc`, `instances.initiated`, `tasks.approve`, `tasks.reject`, `tasks.transfer`, `tasks.query`, and `tasks.remind`.
 - Semantic indexing is implemented as `devflow.semantic` with AST-based code understanding. Python files use the built-in `ast` module (zero dependency); JavaScript/TypeScript files use `tree-sitter` with lazy import and graceful degradation when not installed. The index is stored as JSON files under `{workspace}/.devflow-index/` with `symbols.json`, `relations.json`, `file_meta.json`, and `summary.json`. Incremental updates use SHA256 hash-based change detection. The `semantic_search` tool supports five query types: symbol search, references, callers, hierarchy, and dependencies. `build_codebase_context` appends semantic summary, top-level symbols, and relation counts to its output. The feature is controlled by `SemanticConfig` in `config.json` and can be disabled.
+- Reference document system (`devflow.references`) provides 13 industry-standard documents based on public standards (EARS/ISO 29148, ADR/MADR, NFR/ISO 25010, API/RFC 9110, Karpathy coding guidelines, etc.) — clean room implementation with no proprietary content. `ReferenceRegistry` uses lazy loading (YAML front matter index at startup, full content on first use with caching), character budget control (`max_chars_per_stage`/`max_chars_per_document`), and priority-based stage matching. Documents are injected into Agent prompts at 5 stages: `requirement_intake` (ears-syntax, nfr-checklist), `solution_design` (adr-template, tech-selection, layered-architecture, api-design, db-schema, auth-flow), `code_generation` (git-conventions, env-management, karpathy-coding-guidelines), `test_generation` (testing-strategy, karpathy-coding-guidelines), `code_review` (nfr-checklist, release-checklist, karpathy-coding-guidelines). `solution.json` and `code-review.json` record `reference_documents_used` for traceability. Controlled by `ReferenceConfig` in `config.json`; disabled by default when `reference.enabled=false`.
+- Karpathy coding guidelines are integrated into DevFlow at two layers: (1) as a reference document (`karpathy-coding-guidelines`, priority 15) injected at runtime into code_generation, test_generation, and code_review stages; (2) as hardcoded behavioral constraints in all four coding agent system prompts (`devflow/code/prompt.py`, `devflow/test/prompt.py`, `devflow/review/prompt.py`, `devflow/solution/prompt.py`). The four principles — think before coding (surface assumptions, present tradeoffs), simplicity first (minimum code, no speculative abstractions), surgical changes (touch only what you must, match existing style), and goal-driven execution (define verifiable success criteria) — are translated into role-specific behavioral rules. Code review gains two new finding categories: `simplicity` and `precision`.
 - All `subprocess.run(text=True, ...)` calls must explicitly specify `encoding="utf-8"` and `errors="replace"` to avoid Windows GBK default codec failures. The `stdout`/`stderr` return values must be defensively checked for `None` before slicing or string operations, because a `UnicodeDecodeError` in the internal reader thread leaves them as `None`. This pattern is already followed in `delivery/agent.py` and `intake/lark_cli.py` and must be applied consistently to all new subprocess calls.
 - Windows UTF-8 encoding is enforced at two levels: (1) `cross-env PYTHONUTF8=1` in the `npm run dev` script via `package.json`, ensuring Python's UTF-8 mode is active regardless of the system code page; (2) `$env:PYTHONUTF8 = "1"` in the PowerShell Profile for permanent effect. This eliminates the root cause of Chinese console output garbling on Windows (GBK/CP936 default). All previously English-only console messages (guidance, doctor output, poll status, semantic index, API server startup, error messages) have been restored to Simplified Chinese, consistent with the project's localization policy.
 - Bot UX v2 improvements: When `default_chat_id` is not configured, `devflow start` prints console guidance in Simplified Chinese (previously English to avoid Windows GBK encoding issues, now safe with `PYTHONUTF8=1`); first-time bot interactions include a brief usage guide. When requirement analysis produces `open_questions` and `quality.ready_for_next_stage` is `false`, the pipeline pauses, writes a `waiting_clarification` checkpoint, and sends an orange "🔍 需求待澄清" card. Users can reply with answers or skip with `继续`/`skip`/`跳过`; the pipeline resumes with updated quality signals and continues to solution design. Solution design and code review artifacts are published as Feishu cloud documents with clickable links in review cards; file change/findings previews increased from 5 to 10 items. Checkpoint commands support run_id prefix matching with ambiguity detection. Approval confirmation replies include the operation type and full run_id. Stage failure messages include stage-specific recovery suggestions. LLM calls trigger "🤔 {stage}：正在思考…" notifications and 30-second timeout reminders when `progress_notifications_enabled` is true.
@@ -113,15 +130,15 @@ The current deliverable is a Python CLI and REST minimal DevFlow runtime. It inc
 
 ## Output Contract
 
-Requirement artifacts use `schema_version = "devflow.requirement.v1"` and include metadata, source summary, normalized requirement, product analysis, acceptance criteria, implementation hints, open questions, sections, and quality signals.
+Requirement artifacts use `schema_version = "devflow.requirement.v1"` and include metadata, source summary, input history (raw user input preserved verbatim for traceability), normalized requirement, product analysis (with structured `user_stories` containing id/title/priority/description/priority_reason/independent_test/acceptance_scenarios with Given/When/Then, plus backward-compatible `user_scenarios`), acceptance criteria (EARS syntax), implementation hints, open questions (with optional `suggested_answer` and `reasoning`), sections, and quality signals (with `dimensions` sub-object: content_quality/requirement_completeness/functional_readiness as clear/partial/missing, plus vague expression detection).
 
-Solution design artifacts use `schema_version = "devflow.solution_design.v1"` and include metadata, workspace, requirement summary, codebase context (with semantic_summary, semantic_symbols, semantic_relations_count), architecture analysis, proposed solution, change plan, API design, testing strategy, risks/assumptions, human review, quality, and prompt metadata.
+Solution design artifacts use `schema_version = "devflow.solution_design.v1"` and include metadata, workspace, requirement summary, codebase context (with semantic_summary, semantic_symbols, semantic_relations_count), architecture analysis, proposed solution, change plan, API design, testing strategy, risks/assumptions, human review, quality, reference_documents_used, and prompt metadata.
 
 Code generation artifacts use `schema_version = "devflow.code_generation.v1"` and include metadata, status, workspace, solution summary, changed files, Chinese summary/warnings, audited tool events, captured diff text, and prompt metadata.
 
 Test generation artifacts use `schema_version = "devflow.test_generation.v1"` and include metadata, status, workspace, upstream input paths, detected stack, generated tests, test command results, Chinese summary/warnings, audited tool events, captured diff text, and prompt metadata.
 
-Code review artifacts use `schema_version = "devflow.code_review.v1"` and include metadata, status, workspace, upstream input paths, review status, quality gate, findings, test summary, diff summary, repair recommendations, Chinese summary/warnings, audited tool events, and prompt metadata.
+Code review artifacts use `schema_version = "devflow.code_review.v1"` and include metadata, status, workspace, upstream input paths, review status, quality gate, findings (categories: correctness, security, tests, maintainability, requirements, operations, simplicity, precision), test summary, diff summary, repair recommendations, reference_documents_used, Chinese summary/warnings, audited tool events, and prompt metadata.
 
 Delivery artifacts use `schema_version = "devflow.delivery.v1"` and include metadata, upstream inputs, approval record, change summary, verification evidence, Git state, and readiness.
 
@@ -184,8 +201,8 @@ Pipeline run records include an `audit` section pointing to the trace path and, 
 ### Gaps to address (from competitor analysis)
 
 1. **Mock Agent layer**: orchestration-engine has complete Mock agents for zero-cost pipeline walkthrough; this project only has `--analyzer heuristic` for intake stage. Adding `--mock` global flag would enable zero-token demo runs.
-2. **Requirement clarification dialogue**: orchestration-engine's PM Agent does up to 3 rounds of structured clarification with options/defaults/impact before proceeding; this project does one-shot analysis.
-3. **Reference document system**: orchestration-engine has 13 industry-standard docs (EARS, ADR, NFR, etc.) injected into Architect and Reviewer agents; this project has no equivalent.
+2. **Requirement clarification dialogue**: orchestration-engine's PM Agent does up to 3 rounds of structured clarification with options/defaults/impact before proceeding; this project does one-shot analysis but now includes structured scanning dimensions, vague expression detection, suggested answers in open_questions, and quality dimensions to surface ambiguities within the single-shot output. Full multi-round dialogue remains deferred.
+3. ~~**Reference document system**: orchestration-engine has 13 industry-standard docs (EARS, ADR, NFR, etc.) injected into Architect and Reviewer agents; this project has no equivalent.~~ **RESOLVED**: Implemented `devflow.references` with 12 industry-standard docs, lazy loading, character budget control, and artifact traceability. See `journey/logs/2026-05-06-reference-document-system.md`.
 4. **Stage timing metrics**: orchestration-engine tracks per-stage duration; this project only has overall start/end timestamps.
 5. **Unified logging**: orchestration-engine has structured dual-output logging; this project uses per-agent print statements.
 6. **asyncio.Event approval**: More elegant than file-polling for API-driven workflows.

@@ -16,6 +16,22 @@ if TYPE_CHECKING:
     from devflow.trace import StageTrace
 
 
+def _load_reference_docs_for_review() -> list[dict[str, Any]]:
+    try:
+        from devflow.config import load_config
+        from devflow.references.registry import ReferenceRegistry
+        config = load_config()
+        if not config.reference.enabled:
+            return []
+        registry = ReferenceRegistry()
+        return registry.get_documents_for_stage(
+            "code_review",
+            max_total_chars=config.reference.max_chars_per_stage,
+        )
+    except Exception:
+        return []
+
+
 REQUIREMENT_SCHEMA_VERSION = "devflow.requirement.v1"
 CODE_GENERATION_SCHEMA_VERSION = "devflow.code_generation.v1"
 TEST_GENERATION_SCHEMA_VERSION = "devflow.test_generation.v1"
@@ -54,6 +70,7 @@ def build_code_review_artifact(
                     code_generation,
                     test_generation,
                     executor.events,
+                    reference_documents=_load_reference_docs_for_review(),
                 ),
             }
         )
@@ -125,6 +142,10 @@ def build_code_review_artifact(
         "summary": str(finish.get("summary") or "").strip(),
         "warnings": _text_list(finish.get("warnings")),
         "tool_events": executor.events,
+        "reference_documents_used": [
+            {"name": doc.get("name"), "title": doc.get("title"), "chars_injected": len(doc.get("content", ""))}
+            for doc in _load_reference_docs_for_review()
+        ],
         "prompt": {
             "system_prompt": CODE_REVIEW_SYSTEM_PROMPT,
             "turn_count": len(completions),

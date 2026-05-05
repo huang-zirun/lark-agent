@@ -16,6 +16,7 @@ PROVIDER_BASE_URLS = {
     "ark": "https://ark.cn-beijing.volces.com/api/v3",
     "bailian": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "deepseek": "https://api.deepseek.com",
+    "mimo": "https://api.xiaomimimo.com/v1",
     "openai": "https://api.openai.com/v1",
 }
 

@@ -646,6 +646,7 @@ def maybe_run_solution_design(
                 config.llm,
                 requirement_path=requirement_path,
                 stage_trace=solution_trace,
+                reference_config=config.reference,
             )
         finally:
             thinking_timer.cancel()
@@ -1169,6 +1170,7 @@ def resume_blocked_solution_design(
         config.llm,
         requirement_path=requirement_path,
         stage_trace=solution_trace,
+        reference_config=config.reference,
     )
     write_solution_artifact(artifact, solution_path)
     solution_markdown_path.write_text(
@@ -1948,6 +1950,7 @@ def rerun_solution_design_after_reject(
         config.llm,
         requirement_path=requirement_path,
         stage_trace=solution_trace,
+        reference_config=config.reference,
     )
     write_solution_artifact(artifact, solution_path)
     solution_markdown_path.write_text(

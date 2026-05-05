@@ -17,6 +17,22 @@ if TYPE_CHECKING:
     from devflow.trace import StageTrace
 
 
+def _load_reference_docs_for_test() -> list[dict[str, Any]]:
+    try:
+        from devflow.config import load_config
+        from devflow.references.registry import ReferenceRegistry
+        config = load_config()
+        if not config.reference.enabled:
+            return []
+        registry = ReferenceRegistry()
+        return registry.get_documents_for_stage(
+            "test_generation",
+            max_total_chars=config.reference.max_chars_per_stage,
+        )
+    except Exception:
+        return []
+
+
 REQUIREMENT_SCHEMA_VERSION = "devflow.requirement.v1"
 CODE_GENERATION_SCHEMA_VERSION = "devflow.code_generation.v1"
 
@@ -53,6 +69,7 @@ def build_test_generation_artifact(
                     code_generation,
                     detected_stack,
                     executor.events,
+                    reference_documents=_load_reference_docs_for_test(),
                 ),
             }
         )

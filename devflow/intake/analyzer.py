@@ -52,9 +52,9 @@ def build_requirement_artifact(
     title = source.title or infer_title(content)
     sections = build_sections(content)
     extracted = extract_product_fields(content)
-    open_questions = build_open_questions(extracted)
+    open_questions = build_open_questions(extracted, content=content)
     acceptance_criteria = build_acceptance_criteria(content, extracted)
-    quality = build_quality(extracted, acceptance_criteria, open_questions)
+    quality = build_quality(extracted, acceptance_criteria, open_questions, content=content)
     analysis = {
         "normalized_requirement": {
             "title": title,
@@ -140,6 +140,13 @@ def build_artifact_payload(
     }
     metadata.update(metadata_extra)
 
+    input_history_entry = {
+        "timestamp": metadata["created_at"],
+        "mode": "generate",
+        "trigger": "首次创建需求",
+        "raw_input": content,
+    }
+
     return {
         "schema_version": SCHEMA_VERSION,
         "metadata": metadata,
@@ -152,6 +159,7 @@ def build_artifact_payload(
             "embedded_resources": source.embedded_resources,
             "metadata": source.metadata,
         },
+        "input_history": [input_history_entry],
         "normalized_requirement": analysis["normalized_requirement"],
         "product_analysis": analysis["product_analysis"],
         "acceptance_criteria": analysis["acceptance_criteria"],
@@ -257,10 +265,19 @@ def build_llm_user_prompt(
         "字段名必须保持英文，schema/枚举/机器消费值不要翻译；所有字段值、问题、告警、验收标准等人可读内容必须使用简体中文。\n\n"
         "结构要求：\n"
         "- normalized_requirement: title 字符串，background/target_users/problem/goals/non_goals/scope 为字符串数组。\n"
-        "- product_analysis: user_scenarios/business_value/evidence/assumptions/risks/dependencies 为字符串数组。\n"
-        "- acceptance_criteria: 对象数组，每个对象包含 id, source, criterion。\n"
-        "- open_questions: 对象数组，每个对象包含 field, question。\n"
-        "- quality: 对象，包含 completeness_score 数字、ambiguity_score 数字、ready_for_next_stage 布尔值、warnings 字符串数组。\n\n"
+        "- product_analysis: user_stories 为对象数组（见下方详细结构），business_value/evidence/assumptions/risks/dependencies 为字符串数组。\n"
+        "- acceptance_criteria: 对象数组，每个对象包含 id, source, criterion。验收标准必须使用 EARS 语法模式，可测试无歧义。\n"
+        "- open_questions: 对象数组，每个对象包含 field, question, suggested_answer（建议答案，可选）, reasoning（推理依据，可选）。最多 3 个，按优先级排序：范围 > 安全/隐私 > 用户体验 > 技术细节。\n"
+        "- quality: 对象，包含 completeness_score 数字、ambiguity_score 数字、ready_for_next_stage 布尔值、warnings 字符串数组、dimensions 对象（可选，包含 content_quality/requirement_completeness/functional_readiness，值为 clear/partial/missing）。\n\n"
+        "user_stories 详细结构（product_analysis.user_stories）：\n"
+        "每个用户故事是一个对象，包含：\n"
+        "- id: 字符串，如 US-001、US-002\n"
+        "- title: 简要标题\n"
+        "- priority: P1（核心，必须实现）/P2（重要，应当实现）/P3（锦上添花，可以实现）\n"
+        "- description: 使用中文表达'作为某类角色，我希望完成某个动作，以便获得某个收益'\n"
+        "- priority_reason: 为什么是这个优先级\n"
+        "- independent_test: 如何独立验证这个故事的价值\n"
+        "- acceptance_scenarios: 对象数组，每个包含 given（初始状态）、when（用户操作）、then（预期结果）\n\n"
         f"来源类型: {source.source_type}\n"
         f"来源 ID: {source.source_id}\n"
         f"来源标题: {source.title or ''}\n"
@@ -287,6 +304,21 @@ def normalize_llm_analysis(payload: dict[str, Any]) -> dict[str, Any]:
     product = _dict_payload(payload["product_analysis"], "product_analysis")
     quality = _dict_payload(payload["quality"], "quality")
 
+    user_stories_raw = product.get("user_stories")
+    user_stories = _user_stories_list(user_stories_raw) if isinstance(user_stories_raw, list) else []
+    user_scenarios_from_stories = [us["description"] for us in user_stories if us.get("description")]
+    user_scenarios_legacy = _text_list(product.get("user_scenarios"))
+    user_scenarios = user_scenarios_from_stories if user_scenarios_from_stories else user_scenarios_legacy
+
+    quality_dimensions = quality.get("dimensions")
+    dimensions = None
+    if isinstance(quality_dimensions, dict):
+        dimensions = {
+            "content_quality": _text(quality_dimensions.get("content_quality")) or "clear",
+            "requirement_completeness": _text(quality_dimensions.get("requirement_completeness")) or "clear",
+            "functional_readiness": _text(quality_dimensions.get("functional_readiness")) or "clear",
+        }
+
     return {
         "normalized_requirement": {
             "title": _text(normalized.get("title")) or "未命名需求",
@@ -298,7 +330,8 @@ def normalize_llm_analysis(payload: dict[str, Any]) -> dict[str, Any]:
             "scope": _text_list(normalized.get("scope")),
         },
         "product_analysis": {
-            "user_scenarios": _text_list(product.get("user_scenarios")),
+            "user_stories": user_stories,
+            "user_scenarios": user_scenarios,
             "business_value": _text_list(product.get("business_value")),
             "evidence": _text_list(product.get("evidence")),
             "assumptions": _text_list(product.get("assumptions")),
@@ -312,6 +345,7 @@ def normalize_llm_analysis(payload: dict[str, Any]) -> dict[str, Any]:
             "ambiguity_score": _score(quality.get("ambiguity_score")),
             "ready_for_next_stage": bool(quality.get("ready_for_next_stage")),
             "warnings": _text_list(quality.get("warnings")),
+            **({"dimensions": dimensions} if dimensions else {}),
         },
     }
 
@@ -437,7 +471,10 @@ def build_acceptance_criteria(
     return criteria
 
 
-def build_open_questions(extracted: dict[str, list[str]]) -> list[dict[str, str]]:
+def build_open_questions(
+    extracted: dict[str, list[str]],
+    content: str | None = None,
+) -> list[dict[str, str]]:
     question_specs = [
         ("target_users", "这个需求的主要目标用户或角色是谁？"),
         ("problem", "在决定方案前，需要先解决的具体用户问题是什么？"),
@@ -445,10 +482,39 @@ def build_open_questions(extracted: dict[str, list[str]]) -> list[dict[str, str]
         ("scope", "首版范围具体包含哪些内容？"),
         ("non_goals", "本期需要明确排除哪些内容？"),
     ]
-    questions = []
+    questions: list[dict[str, str]] = []
     for field, question in question_specs:
         if not extracted.get(field):
             questions.append({"field": field, "question": question})
+
+    if content:
+        vague_questions = _detect_vague_expressions(content)
+        questions.extend(vague_questions)
+
+    return questions[:8]
+
+
+_VAGUE_PATTERNS: list[tuple[str, str, str]] = [
+    (r"(快速|高效|稳定|高性能|robust|fast|reliable|performant)", "性能需求未量化", "请明确具体的性能指标（如响应时间、吞吐量、可用性百分比）"),
+    (r"(友好|直观|易用|intuitive|user-friendly|easy\s+to\s+use)", "用户体验描述主观", "请用可测试的交互标准替代主观评价（如'3次点击内完成任务'）"),
+    (r"(等|等等|etc\.|and\s+so\s+on|\.\.\.)", "范围边界模糊", "请明确列举完整的范围项，避免使用'等'导致的范围歧义"),
+]
+
+
+def _detect_vague_expressions(content: str) -> list[dict[str, str]]:
+    questions: list[dict[str, str]] = []
+    seen_fields: set[str] = set()
+    for pattern, field_label, suggestion in _VAGUE_PATTERNS:
+        if field_label in seen_fields:
+            continue
+        if re.search(pattern, content, re.IGNORECASE):
+            seen_fields.add(field_label)
+            questions.append({
+                "field": "vague_expression",
+                "question": f"需求中包含模糊表述（{field_label}），{suggestion}",
+                "suggested_answer": suggestion.split("（")[1].rstrip("）") if "（" in suggestion else suggestion,
+                "reasoning": "模糊表述会导致下游实现理解不一致，需量化为可测试的标准",
+            })
     return questions
 
 
@@ -510,12 +576,61 @@ def _question_list(value: Any) -> list[dict[str, str]]:
         if isinstance(item, dict):
             question = _text(item.get("question"))
             if question:
-                questions.append({"field": _text(item.get("field")) or "general", "question": question})
+                entry: dict[str, str] = {"field": _text(item.get("field")) or "general", "question": question}
+                suggested = _text(item.get("suggested_answer"))
+                if suggested:
+                    entry["suggested_answer"] = suggested
+                reasoning = _text(item.get("reasoning"))
+                if reasoning:
+                    entry["reasoning"] = reasoning
+                questions.append(entry)
         else:
             question = _text(item)
             if question:
                 questions.append({"field": "general", "question": question})
     return questions
+
+
+def _user_stories_list(value: list[Any]) -> list[dict[str, Any]]:
+    stories: list[dict[str, Any]] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            desc = _text(item)
+            if desc:
+                stories.append({
+                    "id": f"US-{index:03d}",
+                    "title": "",
+                    "priority": "P2",
+                    "description": desc,
+                    "priority_reason": "",
+                    "independent_test": "",
+                    "acceptance_scenarios": [],
+                })
+            continue
+        story_id = _text(item.get("id")) or f"US-{index:03d}"
+        description = _text(item.get("description"))
+        if not description:
+            continue
+        scenarios_raw = item.get("acceptance_scenarios")
+        scenarios = []
+        if isinstance(scenarios_raw, list):
+            for sc in scenarios_raw:
+                if isinstance(sc, dict):
+                    scenarios.append({
+                        "given": _text(sc.get("given")) or "",
+                        "when": _text(sc.get("when")) or "",
+                        "then": _text(sc.get("then")) or "",
+                    })
+        stories.append({
+            "id": story_id,
+            "title": _text(item.get("title")) or "",
+            "priority": _text(item.get("priority")) or "P2",
+            "description": description,
+            "priority_reason": _text(item.get("priority_reason")) or "",
+            "independent_test": _text(item.get("independent_test")) or "",
+            "acceptance_scenarios": scenarios,
+        })
+    return stories
 
 
 def _score(value: Any) -> float:
@@ -533,18 +648,34 @@ def build_quality(
     extracted: dict[str, list[str]],
     acceptance_criteria: list[dict[str, str]],
     open_questions: list[dict[str, str]],
+    content: str | None = None,
 ) -> dict[str, Any]:
     required = ["target_users", "problem", "goals", "scope"]
     present = sum(1 for field in required if extracted.get(field))
     if acceptance_criteria:
         present += 1
     completeness = round(present / 5, 2)
-    ambiguity = round(min(1.0, len(open_questions) / 5), 2)
+
+    vague_count = sum(1 for q in open_questions if q.get("field") == "vague_expression")
+    ambiguity = round(min(1.0, (len(open_questions) + vague_count * 0.5) / 5), 2)
+
+    content_quality = "clear"
+    requirement_completeness = "clear" if completeness >= 0.6 else ("partial" if completeness >= 0.4 else "missing")
+    functional_readiness = "clear" if acceptance_criteria else "partial"
+
+    if content and vague_count > 0:
+        content_quality = "partial"
+
     return {
         "completeness_score": completeness,
         "ambiguity_score": ambiguity,
         "ready_for_next_stage": completeness >= 0.6 and ambiguity <= 0.6,
-        "warnings": build_quality_warnings(completeness, ambiguity, acceptance_criteria),
+        "warnings": build_quality_warnings(completeness, ambiguity, acceptance_criteria, vague_count),
+        "dimensions": {
+            "content_quality": content_quality,
+            "requirement_completeness": requirement_completeness,
+            "functional_readiness": functional_readiness,
+        },
     }
 
 
@@ -552,6 +683,7 @@ def build_quality_warnings(
     completeness: float,
     ambiguity: float,
     acceptance_criteria: list[dict[str, str]],
+    vague_count: int = 0,
 ) -> list[str]:
     warnings: list[str] = []
     if completeness < 0.6:
@@ -560,6 +692,8 @@ def build_quality_warnings(
         warnings.append("进入方案设计前仍有较多开放问题。")
     if not acceptance_criteria:
         warnings.append("未能推断出可测试的验收标准。")
+    if vague_count > 0:
+        warnings.append(f"需求中包含 {vague_count} 处模糊表述，建议量化为可测试标准。")
     return warnings
 
 

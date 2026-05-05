@@ -16,6 +16,22 @@ if TYPE_CHECKING:
     from devflow.trace import StageTrace
 
 
+def _load_reference_docs_for_code() -> list[dict[str, Any]]:
+    try:
+        from devflow.config import load_config
+        from devflow.references.registry import ReferenceRegistry
+        config = load_config()
+        if not config.reference.enabled:
+            return []
+        registry = ReferenceRegistry()
+        return registry.get_documents_for_stage(
+            "code_generation",
+            max_total_chars=config.reference.max_chars_per_stage,
+        )
+    except Exception:
+        return []
+
+
 class QualityGateError(Exception):
     def __init__(self, stage: str, reasons: list[str], quality_snapshot: dict | None = None) -> None:
         self.stage = stage
@@ -52,7 +68,7 @@ def build_code_generation_artifact(
     completions: list[dict[str, Any]] = []
 
     for turn in range(1, max_turns + 1):
-        messages.append({"role": "user", "content": build_code_generation_user_prompt(solution, executor.events)})
+        messages.append({"role": "user", "content": build_code_generation_user_prompt(solution, executor.events, reference_documents=_load_reference_docs_for_code())})
         if stage_trace is not None:
             stage_trace.event("code_llm_started", status="running", payload={"turn": turn, "model": llm_config.model})
         completion = chat_completion(llm_config, messages, opener=opener)
