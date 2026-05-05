@@ -8,6 +8,8 @@ from uuid import uuid4
 from devflow.checkpoint import (
     SCHEMA_VERSION,
     apply_checkpoint_decision,
+    build_code_review_card,
+    build_code_review_checkpoint,
     build_solution_review_card,
     build_solution_review_checkpoint,
     parse_checkpoint_command,
@@ -302,6 +304,83 @@ class ConfirmationReplyFormatTests(unittest.TestCase):
             else f"🔄 已收到拒绝指令，正在处理… 运行 ID：{cmd.run_id}"
         )
         self.assertEqual(confirm_text, "🔄 已收到拒绝指令，正在处理… 运行 ID：20260503T083136Z-run-abc")
+
+
+class CodeReviewApprovalTests(unittest.TestCase):
+    def test_build_code_review_checkpoint(self) -> None:
+        run_dir = temp_run_dir()
+        checkpoint = build_code_review_checkpoint(
+            {"run_id": "run_cr_123"},
+            run_dir / "code-review.json",
+            run_dir / "code-review.md",
+        )
+        write_checkpoint(run_dir, checkpoint)
+
+        saved = json.loads((run_dir / "checkpoint.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["schema_version"], SCHEMA_VERSION)
+        self.assertEqual(saved["stage"], "code_review")
+        self.assertEqual(saved["status"], "waiting_approval")
+        self.assertEqual(saved["attempt"], 1)
+
+    def test_code_review_card_without_approval_instance(self) -> None:
+        review_artifact = {
+            "review_status": "passed",
+            "quality_gate": {"passed": True, "blocking_findings": 0, "risk_level": "low"},
+            "findings": [],
+            "summary": "代码评审通过",
+        }
+        card = build_code_review_card(
+            {"run_id": "run_cr_123", "detected_input": {"kind": "inline_text"}},
+            review_artifact,
+            review_path=Path("artifacts/runs/run_cr_123/code-review.json"),
+            review_markdown_path=Path("artifacts/runs/run_cr_123/code-review.md"),
+        )
+        content = json.dumps(card, ensure_ascii=False)
+        self.assertIn("Approve run_cr_123", content)
+        self.assertIn("Reject run_cr_123", content)
+        self.assertNotIn("审批", content)
+
+    def test_code_review_card_with_approval_instance(self) -> None:
+        review_artifact = {
+            "review_status": "needs_changes",
+            "quality_gate": {"passed": False, "blocking_findings": 2, "risk_level": "high"},
+            "findings": [
+                {"severity": "P1", "path": "main.py", "title": "SQL 注入风险"},
+            ],
+            "summary": "发现阻塞问题",
+        }
+        card = build_code_review_card(
+            {"run_id": "run_cr_456", "detected_input": {"kind": "inline_text"}},
+            review_artifact,
+            review_path=Path("artifacts/runs/run_cr_456/code-review.json"),
+            review_markdown_path=Path("artifacts/runs/run_cr_456/code-review.md"),
+            has_approval_instance=True,
+        )
+        content = json.dumps(card, ensure_ascii=False)
+        self.assertIn("Approve run_cr_456", content)
+        self.assertIn("Reject run_cr_456", content)
+        self.assertIn("审批", content)
+
+    def test_code_review_card_does_not_use_dash_list_syntax_in_lark_md(self) -> None:
+        review_artifact = {
+            "review_status": "passed",
+            "quality_gate": {"passed": True, "blocking_findings": 0, "risk_level": "low"},
+            "findings": [],
+            "summary": "通过",
+        }
+        card = build_code_review_card(
+            {"run_id": "run_cr_789", "detected_input": {"kind": "inline_text"}},
+            review_artifact,
+            review_path=Path("artifacts/runs/run_cr_789/code-review.json"),
+            review_markdown_path=Path("artifacts/runs/run_cr_789/code-review.md"),
+            has_approval_instance=True,
+        )
+        for element in card["elements"]:
+            if element.get("tag") == "div" and element.get("text", {}).get("tag") == "lark_md":
+                content = element["text"]["content"]
+                for line in content.split("\n"):
+                    if line.startswith("- "):
+                        self.fail(f"lark_md content uses unsupported '- ' list syntax: {line!r}")
 
 
 if __name__ == "__main__":
