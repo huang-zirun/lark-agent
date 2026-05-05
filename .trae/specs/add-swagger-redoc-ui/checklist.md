@@ -1,8 +1,0 @@
-- [x] `SWAGGER_UI_HTML` 常量使用 CDN swagger-ui-dist@5.20.1，url 指向 `/api/v1/openapi.json`，StandaloneLayout 布局
-- [x] `REDOC_HTML` 常量使用 CDN redoc latest，spec-url 指向 `/api/v1/openapi.json`
-- [x] `_html_response` 方法正确设置 Content-Type 为 `text/html; charset=utf-8` 并返回编码后的 HTML
-- [x] `_ROUTE_PATTERNS` 包含 `("GET", r"^/docs$")` 和 `("GET", r"^/redoc$")`
-- [x] `_dispatch` 方法正确分发 `/docs` 和 `/redoc` 路由
-- [x] `OPENAPI_SPEC["paths"]` 包含 `/docs` 和 `/redoc` 的 GET 操作声明，tag 为 Meta
-- [x] `run_server` 启动时打印 Swagger UI 和 ReDoc URL
-- [x] 现有 21 个 API 端点行为不受影响（无回归）
