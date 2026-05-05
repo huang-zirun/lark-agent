@@ -1,0 +1,20 @@
+{
+  "name": "devflow-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-driven DevFlow requirement intake agent.",
+  "scripts": {
+    "dev": "cross-env PYTHONUTF8=1 concurrently -n api,bot,dashboard -c blue,green,magenta --kill-others-on-fail \"uv run devflow serve\" \"uv run devflow start\" \"npm run dev --prefix dashboard\"",
+    "dev:api": "uv run devflow serve",
+    "dev:bot": "uv run devflow start",
+    "dev:dashboard": "npm run dev --prefix dashboard",
+    "lark": "lark-cli",
+    "lark:version": "lark-cli --version",
+    "lark:auth": "lark-cli auth status"
+  },
+  "devDependencies": {
+    "@larksuite/cli": "1.0.23",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0"
+  }
+}

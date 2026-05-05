@@ -1,0 +1,46 @@
+{
+  "llm": {
+    "provider": "ark",
+    "api_key": "",
+    "model": "",
+    "base_url": "",
+    "temperature": 0.2,
+    "max_tokens": 2000,
+    "timeout_seconds": 120,
+    "response_format_json": false
+  },
+  "lark": {
+    "cli_version": "1.0.23",
+    "app_id": "",
+    "app_secret": "",
+    "test_doc": "",
+    "prd_folder_token": ""
+  },
+  "workspace": {
+    "root": "",
+    "default_repo": ""
+  },
+  "approval": {
+    "enabled": false,
+    "definition_code": "",
+    "poll_interval_seconds": 60
+  },
+  "semantic": {
+    "enabled": true,
+    "max_workers": 4,
+    "parse_timeout_seconds": 10,
+    "max_symbols_per_file": 500,
+    "index_dir_name": ".devflow-index"
+  },
+  "interaction": {
+    "default_chat_id": "",
+    "max_queue_size": 5,
+    "message_merge_window_seconds": 5,
+    "progress_notifications_enabled": true
+  },
+  "reference": {
+    "enabled": true,
+    "max_chars_per_stage": 4000,
+    "max_chars_per_document": 2000
+  }
+}

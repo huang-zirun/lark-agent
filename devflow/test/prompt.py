@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+
+TEST_GENERATION_SYSTEM_PROMPT = """你是 DevFlow 的 TestGenerationAgent。你负责根据需求、技术方案和代码变更生成或补充测试，并执行现有测试框架命令验证结果。优先复用仓库已有测试框架；不要自动安装依赖；只通过工具读写工作区文件或运行受限 PowerShell 命令。字段名使用英文；summary、warnings 等人类可读内容使用简体中文。每次只返回一个 JSON object，不要使用 Markdown 代码块。
+可返回两类对象：
+{"action":"tool","tool":"read_file|write_file|edit_file|glob_search|grep_search|powershell","input":{...}}
+{"action":"finish","summary":"...","generated_tests":["relative/path"],"warnings":[]}
+
+工具参数签名：
+- read_file: {"path":"相对路径","offset":0,"limit":null}
+- write_file: {"path":"相对路径","content":"文件内容"}
+- edit_file: {"path":"相对路径","old_string":"待查找的原始文本","new_string":"替换后的新文本","replace_all":false}
+- glob_search: {"pattern":"glob模式"}
+- grep_search: {"pattern":"正则表达式","glob":"文件模式"}
+- powershell: {"command":"命令","timeout_seconds":60}
+
+参考文档使用：
+- 输入中包含 reference_documents 字段，提供测试策略和覆盖率目标参考。
+- 按照测试金字塔分配测试层级：单元测试 70%、集成测试 20%、E2E 测试 10%。
+- 追求行覆盖率 ≥ 80%、分支覆盖率 ≥ 70%，关键路径覆盖率 100%。
+- 参考文档是指导性建议，需结合项目实际情况灵活应用。
+
+编码行为约束（Karpathy 指南）：
+1. 编码前思考：先检测已有测试框架和模式，复用而非重造。遇到方案中测试策略不明确时在 warnings 中标注，不要默默选择框架。
+2. 简洁优先：只为方案中明确的功能点生成测试。不为不可能发生的场景写测试。不引入方案未要求的新测试依赖。
+3. 精准修改：不修改被测代码来适配测试。不改动已有测试（除非方案明确要求）。匹配仓库已有测试风格和命名约定。
+4. 目标驱动执行：生成测试后必须执行验证，记录 pass/fail 结果作为成功标准。finish 时 summary 必须说明每个 generated_test 覆盖了哪个功能点。
+"""
+
+
+def build_test_generation_user_prompt(
+    requirement: dict[str, Any],
+    solution: dict[str, Any],
+    code_generation: dict[str, Any],
+    detected_stack: dict[str, Any],
+    tool_events: list[dict[str, Any]],
+    reference_documents: list[dict[str, Any]] | None = None,
+) -> str:
+    payload = {
+        "requirement": {
+            "normalized_requirement": requirement.get("normalized_requirement"),
+            "acceptance_criteria": requirement.get("acceptance_criteria"),
+        },
+        "solution": {
+            "workspace": solution.get("workspace"),
+            "requirement_summary": solution.get("requirement_summary"),
+            "proposed_solution": solution.get("proposed_solution"),
+            "change_plan": solution.get("change_plan"),
+            "testing_strategy": solution.get("testing_strategy"),
+        },
+        "code_generation": {
+            "changed_files": code_generation.get("changed_files"),
+            "summary": code_generation.get("summary"),
+            "diff": code_generation.get("diff"),
+        },
+        "detected_stack": detected_stack,
+        "reference_documents": reference_documents or [],
+        "tool_events": tool_events[-20:],
+        "instruction": "生成必要的单元测试或集成测试，优先运行 detected_stack.commands 中的命令验证。完成后返回 finish。",
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)

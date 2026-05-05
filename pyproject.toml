@@ -1,0 +1,19 @@
+[project]
+name = "devflow-engine"
+version = "0.1.0"
+description = "AI-driven DevFlow requirement intake agent."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.2.0",
+]
+
+[project.scripts]
+devflow = "devflow.cli:main"
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
