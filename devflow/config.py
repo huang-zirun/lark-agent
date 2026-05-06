@@ -21,7 +21,7 @@ class LlmConfig:
     model: str = ""
     base_url: str = ""
     temperature: float = 0.2
-    max_tokens: int = 2000
+    max_tokens: int = 4096
     timeout_seconds: int = 120
     response_format_json: bool = False
 
@@ -138,7 +138,7 @@ def load_config(
         model=_string(llm_section.get("model")) or "",
         base_url=_string(llm_section.get("base_url")) or "",
         temperature=_float(llm_section.get("temperature"), 0.2),
-        max_tokens=_int(llm_section.get("max_tokens"), 2000),
+        max_tokens=_int(llm_section.get("max_tokens"), 4096),
         timeout_seconds=_int(llm_section.get("timeout_seconds"), 120),
         response_format_json=_bool(llm_section.get("response_format_json"), False),
     )

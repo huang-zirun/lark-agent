@@ -56,7 +56,13 @@ def build_code_review_artifact(
     workspace = code_generation["workspace"]
     workspace_root = Path(workspace["path"]).expanduser().resolve()
     executor = ReviewToolExecutor(workspace_root)
-    messages: list[dict[str, str]] = [{"role": "system", "content": CODE_REVIEW_SYSTEM_PROMPT}]
+    messages: list[dict[str, str]] = [
+        {
+            "role": "system",
+            "content": CODE_REVIEW_SYSTEM_PROMPT
+            + "\n只返回一个合法 JSON object，不要包含 markdown 代码块。",
+        }
+    ]
     finish: dict[str, Any] | None = None
     completions: list[dict[str, Any]] = []
 

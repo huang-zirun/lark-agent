@@ -55,7 +55,13 @@ def build_test_generation_artifact(
     workspace_root = Path(workspace["path"]).expanduser().resolve()
     detected_stack = detect_test_stack(workspace_root)
     executor = CodeToolExecutor(workspace_root)
-    messages: list[dict[str, str]] = [{"role": "system", "content": TEST_GENERATION_SYSTEM_PROMPT}]
+    messages: list[dict[str, str]] = [
+        {
+            "role": "system",
+            "content": TEST_GENERATION_SYSTEM_PROMPT
+            + "\n只返回一个合法 JSON object，不要包含 markdown 代码块。",
+        }
+    ]
     finish: dict[str, Any] | None = None
     completions: list[dict[str, Any]] = []
 

@@ -63,7 +63,13 @@ def build_code_generation_artifact(
     workspace = solution["workspace"]
     workspace_root = Path(workspace["path"]).expanduser().resolve()
     executor = CodeToolExecutor(workspace_root)
-    messages: list[dict[str, str]] = [{"role": "system", "content": CODE_GENERATION_SYSTEM_PROMPT}]
+    messages: list[dict[str, str]] = [
+        {
+            "role": "system",
+            "content": CODE_GENERATION_SYSTEM_PROMPT
+            + "\n只返回一个合法 JSON object，不要包含 markdown 代码块。",
+        }
+    ]
     finish: dict[str, Any] | None = None
     completions: list[dict[str, Any]] = []
 

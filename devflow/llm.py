@@ -38,6 +38,7 @@ class LlmCompletion:
     ended_at: str
     duration_ms: int
     request_body: dict[str, Any]
+    finish_reason: str
 
     def to_audit_payload(self) -> dict[str, Any]:
         return {
@@ -48,6 +49,7 @@ class LlmCompletion:
             "usage": self.usage,
             "usage_source": self.usage_source,
             "raw_response": self.raw_response,
+            "finish_reason": self.finish_reason,
         }
 
 
@@ -141,7 +143,8 @@ def chat_completion(
     usage = response_json.get("usage")
     if not isinstance(usage, dict):
         usage = None
-    return LlmCompletion(
+    finish_reason = response_json["choices"][0].get("finish_reason", "")
+    result = LlmCompletion(
         content=content.strip(),
         raw_response=response_json,
         usage=usage,
@@ -150,7 +153,11 @@ def chat_completion(
         ended_at=ended_at,
         duration_ms=duration_ms,
         request_body=payload,
+        finish_reason=finish_reason,
     )
+    if finish_reason == "length":
+        raise LlmError(f"LLM 响应被截断（finish_reason=length），模型 {config.model} 的 max_tokens={config.max_tokens} 不足以完成完整输出。建议增大 llm.max_tokens 或精简 prompt。")
+    return result
 
 
 def chat_completion_content(
@@ -160,6 +167,38 @@ def chat_completion_content(
     opener: UrlOpen | None = None,
 ) -> str:
     return chat_completion(config, messages, opener=opener).content
+
+
+def _repair_truncated_json(text: str) -> str:
+    stack = []
+    in_string = False
+    escape_next = False
+    for ch in text:
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in '{[':
+            stack.append(ch)
+        elif ch == '}':
+            if stack and stack[-1] == '{':
+                stack.pop()
+        elif ch == ']':
+            if stack and stack[-1] == '[':
+                stack.pop()
+    result = text
+    if in_string:
+        result += '"'
+    for bracket in reversed(stack):
+        result += '}' if bracket == '{' else ']'
+    return result
 
 
 def parse_llm_json(text: str) -> dict[str, Any]:
@@ -187,10 +226,19 @@ def parse_llm_json(text: str) -> dict[str, Any]:
             )
         try:
             parsed, _ = decoder.raw_decode(text, start)
-        except json.JSONDecodeError as exc:
-            raise LlmError(
-                f"LLM 响应不是有效 JSON。原始响应前200字符：{original_text[:200]}"
-            ) from exc
+        except json.JSONDecodeError:
+            repaired = _repair_truncated_json(text[start:] if start >= 0 else text)
+            try:
+                parsed, _ = decoder.raw_decode(repaired)
+            except json.JSONDecodeError as exc:
+                raise LlmError(
+                    f"LLM 响应被截断，JSON 不完整且无法自动修复。原始响应前200字符：{original_text[:200]}"
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise LlmError(
+                    f"LLM 响应 JSON 必须是 object，实际是 {type(parsed).__name__}。"
+                )
+            return parsed
     if not isinstance(parsed, dict):
         raise LlmError(
             f"LLM 响应 JSON 必须是 object，实际是 {type(parsed).__name__}。"
