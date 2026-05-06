@@ -431,9 +431,11 @@ class OriginalBugScenarioTests(unittest.TestCase):
         updated_requirement = json.loads(
             (first_result.run_dir / "requirement.json").read_text(encoding="utf-8")
         )
-        raw = updated_requirement["source_summary"]["raw_content"]
-        self.assertIn("贪吃蛇", raw)
-        self.assertIn("春天主题", raw)
+        first_question = updated_requirement["open_questions"][0]
+        self.assertEqual(first_question.get("answer"), "春天主题")
+
+        subdirs = {p.name for p in out_dir.iterdir() if p.is_dir()}
+        self.assertEqual(len(subdirs), 1)
 
     def test_blocked_session_appends_supplemental_message(self) -> None:
         out_dir = temp_out_dir()
@@ -571,13 +573,15 @@ class OriginalBugScenarioTests(unittest.TestCase):
         )
         raw = updated_requirement["source_summary"]["raw_content"]
         self.assertIn("贪吃蛇", raw)
-        self.assertIn("春天主题", raw)
         self.assertIn("美丽花花", raw)
         self.assertIn("绿色草草", raw)
 
+        first_question = updated_requirement["open_questions"][0]
+        self.assertEqual(first_question.get("answer"), "春天主题")
+
         history = updated_requirement.get("input_history") or []
         supplement_entries = [h for h in history if h.get("mode") == "supplement"]
-        self.assertEqual(len(supplement_entries), 3)
+        self.assertEqual(len(supplement_entries), 2)
 
 
 class UpdateSessionFromResultTests(unittest.TestCase):
