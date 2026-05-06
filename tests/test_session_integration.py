@@ -119,6 +119,7 @@ def _write_run_files(
     requirement_artifact: dict | None = None,
     checkpoint_status: str | None = None,
     checkpoint: dict | None = None,
+    stages: list[dict] | None = None,
 ) -> dict:
     requirement_path = run_dir / "requirement.json"
     if requirement_artifact is not None:
@@ -126,6 +127,14 @@ def _write_run_files(
             json.dumps(requirement_artifact, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+    default_stages = [
+        {"name": "requirement_intake", "status": "success"},
+        {"name": "solution_design", "status": "pending"},
+        {"name": "code_generation", "status": "pending"},
+        {"name": "test_generation", "status": "pending"},
+        {"name": "code_review", "status": "pending"},
+        {"name": "delivery", "status": "pending"},
+    ]
     run_payload = {
         "schema_version": "devflow.pipeline_run.v1",
         "run_id": run_id,
@@ -134,14 +143,7 @@ def _write_run_files(
         "run_path": str(run_dir / "run.json"),
         "trigger": {"chat_id": chat_id, "sender_id": sender_id},
         "detected_input": {"kind": "inline_text", "value": "测试需求"},
-        "stages": [
-            {"name": "requirement_intake", "status": "success"},
-            {"name": "solution_design", "status": "pending"},
-            {"name": "code_generation", "status": "pending"},
-            {"name": "test_generation", "status": "pending"},
-            {"name": "code_review", "status": "pending"},
-            {"name": "delivery", "status": "pending"},
-        ],
+        "stages": stages if stages is not None else default_stages,
     }
     if requirement_artifact is not None:
         run_payload["requirement_artifact"] = str(requirement_path)
@@ -165,7 +167,17 @@ class ActiveRunAppendTests(unittest.TestCase):
         run_dir.mkdir(parents=True, exist_ok=True)
 
         artifact = make_requirement_artifact(ready=True, raw_content="贪吃蛇游戏")
-        _write_run_files(run_dir, run_id, status="running", requirement_artifact=artifact)
+        _write_run_files(
+            run_dir, run_id, status="running", requirement_artifact=artifact,
+            stages=[
+                {"name": "requirement_intake", "status": "running"},
+                {"name": "solution_design", "status": "pending"},
+                {"name": "code_generation", "status": "pending"},
+                {"name": "test_generation", "status": "pending"},
+                {"name": "code_review", "status": "pending"},
+                {"name": "delivery", "status": "pending"},
+            ],
+        )
         session.register("oc_123", "ou_123", run_id, "running")
 
         info = session.lookup("oc_123", "ou_123")
@@ -215,7 +227,17 @@ class ActiveRunAppendTests(unittest.TestCase):
         run_dir.mkdir(parents=True, exist_ok=True)
 
         artifact = make_requirement_artifact(ready=True, raw_content="初始需求")
-        _write_run_files(run_dir, run_id, status="running", requirement_artifact=artifact)
+        _write_run_files(
+            run_dir, run_id, status="running", requirement_artifact=artifact,
+            stages=[
+                {"name": "requirement_intake", "status": "running"},
+                {"name": "solution_design", "status": "pending"},
+                {"name": "code_generation", "status": "pending"},
+                {"name": "test_generation", "status": "pending"},
+                {"name": "code_review", "status": "pending"},
+                {"name": "delivery", "status": "pending"},
+            ],
+        )
         session.register("oc_123", "ou_123", run_id, "running")
 
         event_source = make_event_source(content="补充信息", source_id="om_third")
@@ -232,6 +254,50 @@ class ActiveRunAppendTests(unittest.TestCase):
         subdirs_before = {p.name for p in out_dir.iterdir() if p.is_dir()}
         self.assertIn(run_id, subdirs_before)
         self.assertEqual(len(subdirs_before), 1)
+
+
+class OtherStageQueueTests(unittest.TestCase):
+    def test_solution_design_stage_queues_message(self) -> None:
+        out_dir = temp_out_dir()
+        session = SessionManager()
+        run_id = f"run_queue_{uuid4().hex}"
+        run_dir = out_dir / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        artifact = make_requirement_artifact(ready=True, raw_content="贪吃蛇游戏")
+        _write_run_files(
+            run_dir, run_id, status="running", requirement_artifact=artifact,
+            stages=[
+                {"name": "requirement_intake", "status": "success"},
+                {"name": "solution_design", "status": "running"},
+                {"name": "code_generation", "status": "pending"},
+                {"name": "test_generation", "status": "pending"},
+                {"name": "code_review", "status": "pending"},
+                {"name": "delivery", "status": "pending"},
+            ],
+        )
+        session.register("oc_123", "ou_123", run_id, "running")
+
+        replies: list[tuple[str, str, str]] = []
+
+        def reply_sender(msg_id: str, text: str, key: str):
+            replies.append((msg_id, text, key))
+
+        event_source = make_event_source(content="用 TypeScript 写", source_id="om_queue")
+        result = _route_active_session(
+            event_source,
+            session=session,
+            out_dir=out_dir,
+            reply_sender=reply_sender,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.status, "queued")
+        self.assertEqual(result.run_id, run_id)
+        self.assertTrue(any("正在处理中" in r[1] for r in replies))
+
+        requirement = json.loads((run_dir / "requirement.json").read_text(encoding="utf-8"))
+        self.assertNotIn("TypeScript", requirement.get("source_summary", {}).get("raw_content", ""))
 
 
 class WaitingApprovalPromptTests(unittest.TestCase):
