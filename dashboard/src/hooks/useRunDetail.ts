@@ -76,20 +76,22 @@ export interface RunDetail {
 export function useActiveRun() {
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchJson<Record<string, unknown> | null>("/api/v1/metrics/active-run")
-      .then((result) => setData(result))
-      .catch(() => setData(null))
+      .then((result) => { setData(result); setError(null); })
+      .catch((err) => { setData(null); setError(err instanceof Error ? err.message : String(err)); })
       .finally(() => setLoading(false));
   }, []);
 
-  return { data, loading };
+  return { data, loading, error };
 }
 
 export function useRunList(limit = 20) {
   const [data, setData] = useState<RunListItem[] | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -97,8 +99,10 @@ export function useRunList(limit = 20) {
         `/api/v1/metrics/recent-runs?limit=${limit}`
       );
       setData(result.runs);
-    } catch {
+      setError(null);
+    } catch (err) {
       setData(null);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -110,12 +114,13 @@ export function useRunList(limit = 20) {
     return () => clearInterval(id);
   }, [fetchData]);
 
-  return { data, loading, refetch: fetchData };
+  return { data, loading, refetch: fetchData, error };
 }
 
 export function useRunDetail(runId: string | null) {
   const [data, setData] = useState<RunDetail | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     if (!runId) return;
@@ -125,8 +130,10 @@ export function useRunDetail(runId: string | null) {
         `/api/v1/metrics/runs/${runId}/detail`
       );
       setData(result);
-    } catch {
+      setError(null);
+    } catch (err) {
       setData(null);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -141,7 +148,7 @@ export function useRunDetail(runId: string | null) {
     return () => clearInterval(id);
   }, [fetchData, runId, data?.run?.status]);
 
-  return { data, loading, refetch: fetchData };
+  return { data, loading, refetch: fetchData, error };
 }
 
 export function useRunArtifactMarkdown(runId: string | null, stage: string | null) {
