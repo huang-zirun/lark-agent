@@ -366,17 +366,15 @@ def publish_document(
     args = [
         "docs",
         "+create",
-        "--api-version",
-        "v2",
         "--as",
         "bot",
-        "--doc-format",
-        "markdown",
-        "--content",
+        "--title",
+        title,
+        "--markdown",
         markdown,
     ]
     if folder_token:
-        args.extend(["--parent-token", folder_token])
+        args.extend(["--folder-token", folder_token])
     payload = runner(args, 120)
     if not isinstance(payload, dict):
         raise LarkCliError("docs +create 输出异常：期望 JSON object。")

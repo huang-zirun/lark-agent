@@ -113,6 +113,8 @@ class ConfigTests(unittest.TestCase):
                             "app_id": "cli_a",
                             "app_secret": "test-secret",
                             "test_doc": "doc_123",
+                            "artifact_folder_token": "fld_artifacts",
+                            "prd_folder_token": "fld_prd",
                         },
                     }
                 ),
@@ -138,6 +140,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.lark.app_id, "cli_a")
         self.assertEqual(config.lark.app_secret, "test-secret")
         self.assertEqual(config.lark.test_doc, "doc_123")
+        self.assertEqual(config.lark.artifact_folder_token, "fld_artifacts")
+        self.assertEqual(config.lark.prd_folder_token, "fld_prd")
 
     def test_rejects_unlocked_lark_cli_version(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

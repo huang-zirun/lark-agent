@@ -510,7 +510,12 @@ class PipelineStartTests(unittest.TestCase):
     def test_workspace_resume_reply_requires_one_workspace_directive_line(self) -> None:
         self.assertTrue(is_workspace_resume_reply("仓库：D:\\lark"))
         self.assertTrue(is_workspace_resume_reply("新项目：snake-game"))
-        self.assertFalse(is_workspace_resume_reply("仓库：D:\\lark\n收到后我会继续生成技术方案"))
+        # 第一行是 workspace 指令即可，后面可以有额外内容
+        self.assertTrue(is_workspace_resume_reply("仓库：D:\\lark\n收到后我会继续生成技术方案"))
+        self.assertTrue(is_workspace_resume_reply("新项目：snake-game\n其他说明"))
+        # 第一行不是 workspace 指令则返回 False
+        self.assertFalse(is_workspace_resume_reply("收到后我会继续生成技术方案\n仓库：D:\\lark"))
+        self.assertFalse(is_workspace_resume_reply("其他说明"))
 
     def test_workspace_blocked_reply_first_line_contains_reason_and_action(self) -> None:
         reply = build_workspace_blocked_reply(
@@ -1000,6 +1005,8 @@ class PipelineStartTests(unittest.TestCase):
             replies.append((message_id, text, idempotency_key))
 
         with temp_run_dir() as temp_dir:
+            workspace_path = Path(temp_dir) / "workspace"
+            workspace_path.mkdir()
             run_id = f"run_reject_{uuid4().hex}"
             run_dir = Path(temp_dir) / run_id
             run_dir.mkdir()
@@ -1026,7 +1033,7 @@ class PipelineStartTests(unittest.TestCase):
                 "run_path": str(run_dir / "run.json"),
                 "requirement_artifact": str(requirement_path),
                 "trigger": {"chat_id": "oc_123", "sender_id": "ou_123"},
-                "detected_input": {"kind": "inline_text", "value": "目标：检查点\n仓库：D:\\lark"},
+                "detected_input": {"kind": "inline_text", "value": f"目标：检查点\n仓库：{workspace_path}"},
                 "stages": [{"name": name, "status": "pending"} for name in ["requirement_intake", "solution_design", "code_generation", "test_generation", "code_review", "delivery"]],
             }
             (run_dir / "run.json").write_text(json.dumps(run_payload), encoding="utf-8")

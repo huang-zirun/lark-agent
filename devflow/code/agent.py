@@ -80,12 +80,25 @@ def build_code_generation_artifact(
         completion = chat_completion(llm_config, messages, opener=opener)
         completions.append(completion.to_audit_payload())
         if stage_trace is not None:
-            stage_trace.write_json_artifact(f"code-llm-response-turn{turn}.json", completion.to_audit_payload())
+            request_path = stage_trace.write_json_artifact(
+                f"code-llm-request-turn{turn}.json",
+                completion.request_body,
+            )
+            response_path = stage_trace.write_json_artifact(
+                f"code-llm-response-turn{turn}.json",
+                completion.to_audit_payload(),
+            )
             stage_trace.event(
                 "code_llm_completed",
                 status="success",
                 duration_ms=completion.duration_ms,
-                payload={"turn": turn, "token_usage": completion.usage, "usage_source": completion.usage_source},
+                payload={
+                    "turn": turn,
+                    "request_path": str(request_path),
+                    "response_path": str(response_path),
+                    "token_usage": completion.usage,
+                    "usage_source": completion.usage_source,
+                },
             )
         action = normalize_agent_action(parse_llm_json(completion.content))
         messages.append({"role": "assistant", "content": json.dumps(action, ensure_ascii=False)})

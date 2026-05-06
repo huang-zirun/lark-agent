@@ -56,11 +56,18 @@ export interface LlmCallRecord {
   system_prompt_summary: string | null;
   user_prompt_summary: string | null;
   content_summary: string | null;
+  system_prompt: string | null;
+  user_prompt: string | null;
   content: string | null;
   usage: Record<string, number> | null;
   duration_ms: number | null;
   provider: string | null;
   model: string | null;
+  turn: number | null;
+  started_at: string | null;
+  ended_at: string | null;
+  request_path: string | null;
+  response_path: string | null;
 }
 
 export interface RunDetail {
@@ -156,11 +163,14 @@ export function useRunArtifactMarkdown(runId: string | null, stage: string | nul
   const [loading, setLoading] = useState(false);
 
   const fetchData = useCallback(async () => {
-    if (!runId || !stage) return;
+    if (!runId || !stage) {
+      setData(null);
+      return;
+    }
     setLoading(true);
     try {
       const result = await fetchJson<{ content: string | null }>(
-        `/api/v1/metrics/runs/${runId}/artifact-markdown?stage=${stage}`
+        `/api/v1/metrics/runs/${runId}/artifact-markdown?stage=${encodeURIComponent(stage)}`
       );
       setData(result.content);
     } catch {

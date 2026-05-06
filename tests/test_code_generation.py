@@ -13,6 +13,7 @@ from devflow.cli import main
 from devflow.code.agent import build_code_generation_artifact
 from devflow.code.permissions import PermissionDenied, resolve_workspace_path, validate_powershell_command
 from devflow.code.tools import CodeToolExecutor
+from devflow.trace import RunTrace
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[1] / ".test-tmp" / "code-generation"
@@ -123,6 +124,7 @@ class CodeGenerationTests(unittest.TestCase):
                 solution_payload(workspace),
                 LlmConfig(provider="custom", api_key="SECRET_VALUE", model="test-model", base_url="https://example.test/v1"),
                 opener=opener,
+                stage_trace=RunTrace("run_code", workspace).stage("code_generation"),
             )
 
             self.assertEqual(artifact["schema_version"], "devflow.code_generation.v1")
@@ -130,6 +132,10 @@ class CodeGenerationTests(unittest.TestCase):
             self.assertEqual(artifact["changed_files"], ["hello.txt"])
             self.assertTrue((workspace / "hello.txt").exists())
             self.assertEqual(artifact["tool_events"][0]["tool"], "write_file")
+            self.assertTrue((workspace / "code-llm-request-turn1.json").exists())
+            self.assertTrue((workspace / "code-llm-response-turn1.json").exists())
+            self.assertTrue((workspace / "code-llm-request-turn2.json").exists())
+            self.assertTrue((workspace / "code-llm-response-turn2.json").exists())
 
     def test_cli_generates_code_from_solution_file(self) -> None:
         responses = [

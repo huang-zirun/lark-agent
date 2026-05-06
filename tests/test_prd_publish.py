@@ -9,6 +9,7 @@ from devflow.intake.lark_cli import create_prd_document, publish_document, send_
 from devflow.checkpoint import build_solution_review_card, build_code_review_card
 from devflow.pipeline import process_bot_event
 from devflow.prd import build_prd_preview_card, render_prd_markdown
+from devflow.publication import publish_artifact_document, render_code_generation_markdown, render_test_generation_markdown
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[1] / ".test-tmp"
@@ -124,13 +125,11 @@ class PrdPublishTests(unittest.TestCase):
             [
                 "docs",
                 "+create",
-                "--api-version",
-                "v2",
                 "--as",
                 "bot",
-                "--doc-format",
-                "markdown",
-                "--content",
+                "--title",
+                "智能工单分流",
+                "--markdown",
                 "# 智能工单分流",
             ],
         )
@@ -211,12 +210,17 @@ class PrdPublishTests(unittest.TestCase):
                 reply_sender=None,
             )
             run_payload = json.loads(result.run_path.read_text(encoding="utf-8"))
+            requirement_markdown_path = result.run_dir / "requirement.md"
 
         self.assertEqual(result.status, "success")
         self.assertEqual(created[0][0], "智能工单分流")
         self.assertIn("# 智能工单分流", created[0][1])
+        self.assertTrue(requirement_markdown_path.exists())
+        self.assertEqual(run_payload["requirement_markdown"], str(requirement_markdown_path))
+        self.assertIn("#", requirement_markdown_path.read_text(encoding="utf-8"))
         self.assertEqual(cards[0][0], "om_evt")
         self.assertIn("docx_123", run_payload["publication"]["prd"]["document_id"])
+        self.assertEqual(run_payload["artifact_publications"]["requirement_intake"]["document_id"], "docx_123")
         self.assertEqual(run_payload["publication"]["card_reply"]["status"], "success")
 
     def test_process_prd_publish_failure_keeps_analysis_success(self) -> None:
@@ -242,6 +246,7 @@ class PrdPublishTests(unittest.TestCase):
         self.assertEqual(result.status, "success")
         self.assertEqual(run_payload["stages"][0]["status"], "success")
         self.assertEqual(run_payload["publication"]["status"], "failed")
+        self.assertEqual(run_payload["artifact_publications"]["requirement_intake"]["status"], "failed")
         self.assertIn("create doc failed", run_payload["publication"]["error"])
 
     def test_process_card_reply_failure_records_reply_error(self) -> None:
@@ -331,13 +336,11 @@ class PublishDocumentTests(unittest.TestCase):
             [
                 "docs",
                 "+create",
-                "--api-version",
-                "v2",
                 "--as",
                 "bot",
-                "--doc-format",
-                "markdown",
-                "--content",
+                "--title",
+                "技术方案",
+                "--markdown",
                 "# 方案内容",
             ],
         )
@@ -359,7 +362,7 @@ class PublishDocumentTests(unittest.TestCase):
 
         result = publish_document("标题", "内容", folder_token="fld_abc", runner=runner)
 
-        self.assertIn("--parent-token", calls[0][0])
+        self.assertIn("--folder-token", calls[0][0])
         self.assertIn("fld_abc", calls[0][0])
         self.assertEqual(result["document_id"], "docx_folder")
 
@@ -371,6 +374,98 @@ class PublishDocumentTests(unittest.TestCase):
 
         with self.assertRaises(LarkCliError):
             publish_document("标题", "内容", runner=runner)
+
+
+class ArtifactPublicationTests(unittest.TestCase):
+    def test_publish_artifact_document_records_success_and_writes_run_json(self) -> None:
+        with temp_run_dir() as temp_dir:
+            run_dir = Path(temp_dir) / f"pub-{len(list(Path(temp_dir).iterdir()))}"
+            run_dir.mkdir(exist_ok=True)
+            run_payload = {"run_id": "run_pub", "run_path": str(run_dir / "run.json")}
+            (run_dir / "run.json").write_text(json.dumps(run_payload), encoding="utf-8")
+
+            def publisher(title: str, markdown: str, folder_token: str | None):
+                self.assertEqual(title, "Code")
+                self.assertEqual(markdown, "# Code")
+                self.assertEqual(folder_token, "fld_artifact")
+                return {"document_id": "docx_code", "url": "https://example/docx_code"}
+
+            result = publish_artifact_document(
+                run_payload,
+                "code_generation",
+                "Code",
+                "# Code",
+                publisher=publisher,
+                folder_token="fld_artifact",
+            )
+            saved = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(saved["artifact_publications"]["code_generation"]["document_id"], "docx_code")
+
+    def test_publish_artifact_document_records_failure_without_raising(self) -> None:
+        run_payload = {"run_id": "run_pub"}
+
+        def publisher(_title: str, _markdown: str, _folder_token: str | None):
+            raise RuntimeError("create failed")
+
+        result = publish_artifact_document(
+            run_payload,
+            "test_generation",
+            "Test",
+            "# Test",
+            publisher=publisher,
+            folder_token="",
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("create failed", result["error"])
+        self.assertEqual(run_payload["artifact_publications"]["test_generation"]["status"], "failed")
+
+    def test_publish_artifact_document_allows_missing_url(self) -> None:
+        result = publish_artifact_document(
+            {"run_id": "run_pub"},
+            "delivery",
+            "Delivery",
+            "# Delivery",
+            publisher=lambda *_args: {"document_id": "docx_delivery"},
+            folder_token="",
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["document_id"], "docx_delivery")
+        self.assertIsNone(result["url"])
+
+    def test_code_and_test_markdown_renderers_include_expected_sections(self) -> None:
+        code_markdown = render_code_generation_markdown(
+            {
+                "summary": "Generated code",
+                "changed_files": ["app.py"],
+                "warnings": ["manual check"],
+                "diff": "diff --git a/app.py b/app.py\n",
+            },
+            run_id="run_pub",
+            artifact_path="code-generation.json",
+            diff_path="code.diff",
+        )
+        test_markdown = render_test_generation_markdown(
+            {
+                "summary": "Generated tests",
+                "generated_tests": ["tests/test_app.py"],
+                "test_commands": [{"command": "uv run pytest", "status": "success", "returncode": 0}],
+                "diff": "",
+            },
+            run_id="run_pub",
+            artifact_path="test-generation.json",
+            diff_path="test.diff",
+        )
+
+        self.assertIn("Generated code", code_markdown)
+        self.assertIn("app.py", code_markdown)
+        self.assertIn("code.diff", code_markdown)
+        self.assertIn("Generated tests", test_markdown)
+        self.assertIn("uv run pytest", test_markdown)
+        self.assertIn("test.diff", test_markdown)
 
 
 class PrdPreviewCardDocLinkTests(unittest.TestCase):

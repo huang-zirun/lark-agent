@@ -32,6 +32,7 @@ class LarkConfig:
     app_id: str
     app_secret: str
     test_doc: str
+    artifact_folder_token: str = ""
     prd_folder_token: str = ""
 
 
@@ -147,6 +148,7 @@ def load_config(
         app_id=_string(lark_section.get("app_id")) or "",
         app_secret=_string(lark_section.get("app_secret")) or "",
         test_doc=_string(lark_section.get("test_doc")) or "",
+        artifact_folder_token=_string(lark_section.get("artifact_folder_token")) or "",
         prd_folder_token=_string(lark_section.get("prd_folder_token")) or "",
     )
     workspace = WorkspaceConfig(

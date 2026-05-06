@@ -13,6 +13,7 @@ from devflow.config import LlmConfig
 from devflow.review.agent import build_code_review_artifact, write_code_review_artifact
 from devflow.review.render import render_code_review_markdown
 from devflow.review.tools import ReviewToolExecutor
+from devflow.trace import RunTrace
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[1] / ".test-tmp" / "code-review"
@@ -155,12 +156,15 @@ class CodeReviewTests(unittest.TestCase):
                 review_test_artifact_payload(workspace),
                 LlmConfig(provider="custom", api_key="SECRET_VALUE", model="test-model", base_url="https://example.test/v1"),
                 opener=opener,
+                stage_trace=RunTrace("run_review", workspace).stage("code_review"),
             )
 
-        self.assertEqual(artifact["schema_version"], "devflow.code_review.v1")
-        self.assertEqual(artifact["review_status"], "passed")
-        self.assertTrue(artifact["quality_gate"]["passed"])
-        self.assertEqual(artifact["test_summary"]["failed_commands"], 0)
+            self.assertEqual(artifact["schema_version"], "devflow.code_review.v1")
+            self.assertEqual(artifact["review_status"], "passed")
+            self.assertTrue(artifact["quality_gate"]["passed"])
+            self.assertEqual(artifact["test_summary"]["failed_commands"], 0)
+            self.assertTrue((workspace / "review-llm-request-turn1.json").exists())
+            self.assertTrue((workspace / "review-llm-response-turn1.json").exists())
 
     def test_failed_test_command_becomes_blocking_review_evidence(self) -> None:
         responses = [

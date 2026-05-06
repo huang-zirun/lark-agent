@@ -53,7 +53,6 @@ from devflow.intake.lark_cli import (
     fetch_doc_source,
     fetch_message_source,
     listen_bot_events,
-    publish_document,
     send_bot_card_reply,
     send_bot_message,
     send_bot_reply,
@@ -63,6 +62,11 @@ from devflow.intake.models import RequirementSource
 from devflow.intake.output import slugify, write_artifact
 from devflow.llm import LlmError
 from devflow.prd import build_prd_preview_card, render_prd_markdown
+from devflow.publication import (
+    publish_artifact_document,
+    render_code_generation_markdown,
+    render_test_generation_markdown,
+)
 from devflow.pipeline_config import resolve_pipeline_config
 from devflow.review.agent import (
     build_code_review_artifact,
@@ -410,6 +414,42 @@ def _trigger_message_id(run_payload: dict[str, Any]) -> str:
     return str(trigger.get("message_id") or "")
 
 
+def _publication_url(run_payload: dict[str, Any], stage: str) -> str | None:
+    publications = run_payload.get("artifact_publications")
+    if not isinstance(publications, dict):
+        return None
+    result = publications.get(stage)
+    if not isinstance(result, dict) or result.get("status") != "success":
+        return None
+    url = result.get("url")
+    return url if isinstance(url, str) and url.strip() else None
+
+
+def _reply_stage_publication(
+    run_payload: dict[str, Any],
+    stage: str,
+    label: str,
+    local_path: Path | str,
+) -> None:
+    message_id = _trigger_message_id(run_payload)
+    if not message_id:
+        return
+    url = _publication_url(run_payload, stage)
+    local_text = str(local_path)
+    if url:
+        text = f"{label}已发布：{url}\n本地产物：{local_text}"
+    else:
+        text = f"{label}已生成，云文档发布失败或未返回链接。\n本地产物：{local_text}"
+    try:
+        send_bot_reply(
+            message_id,
+            text,
+            _idempotency_key(run_payload["run_id"], f"{stage}-doc"),
+        )
+    except LarkCliError:
+        pass
+
+
 PIPELINE_SCHEMA_VERSION = "devflow.pipeline_run.v1"
 DEFAULT_STAGE_NAMES = [
     "requirement_intake",
@@ -612,10 +652,16 @@ def process_bot_event(
             thinking_timer.cancel()
         stage_trace.event("analysis_completed", status="success", payload={"analyzer": analyzer})
         write_artifact(artifact, requirement_path)
+        requirement_markdown_path, _ = write_requirement_markdown(run_payload, artifact)
         stage_trace.event(
             "artifact_written",
             status="success",
             payload={"path": str(requirement_path), "schema_version": artifact.get("schema_version")},
+        )
+        stage_trace.event(
+            "requirement_markdown_written",
+            status="success",
+            payload={"path": str(requirement_markdown_path)},
         )
 
         ended_at = utc_now()
@@ -920,6 +966,22 @@ def publish_solution_review_checkpoint(
 ) -> None:
     config = load_config()
     approval_cfg = config.approval
+    solution_doc_url: str | None = None
+    try:
+        solution_markdown_content = Path(solution_markdown_path).read_text(encoding="utf-8")
+        doc_result = publish_artifact_document(
+            run_payload,
+            "solution_design",
+            f"技术方案 - {run_payload['run_id']}",
+            solution_markdown_content,
+        )
+        solution_doc_url = doc_result.get("url") or None
+        event_name = "solution_doc_published" if doc_result.get("status") == "success" else "solution_doc_publish_failed"
+        stage_trace.event(event_name, status=str(doc_result.get("status") or "failed"), payload=doc_result)
+    except Exception as exc:
+        solution_doc_url = None
+        run_payload["solution_doc_publish_error"] = str(exc)
+        stage_trace.event("solution_doc_publish_failed", status="failed", payload={"error": str(exc)})
 
     # Try Lark approval flow first if enabled and we have user identity
     if (
@@ -934,6 +996,7 @@ def publish_solution_review_checkpoint(
                 solution_artifact,
                 solution_path=solution_path,
                 solution_markdown_path=solution_markdown_path,
+                solution_doc_url=solution_doc_url,
                 message_id=message_id,
                 event_source=event_source,
                 stage_trace=stage_trace,
@@ -944,23 +1007,6 @@ def publish_solution_review_checkpoint(
             # Fall through to card-based fallback
 
     # Fallback: interactive card with text commands
-    solution_doc_url: str | None = None
-    try:
-        config = load_config()
-        folder_token = config.lark.prd_folder_token or None
-        solution_markdown_content = Path(solution_markdown_path).read_text(encoding="utf-8")
-        doc_result = publish_document(
-            title=f"技术方案 - {run_payload['run_id']}",
-            markdown=solution_markdown_content,
-            folder_token=folder_token,
-        )
-        solution_doc_url = doc_result.get("url") or None
-        stage_trace.event("solution_doc_published", status="success", payload={"url": solution_doc_url})
-    except Exception as exc:
-        solution_doc_url = None
-        run_payload["solution_doc_publish_error"] = str(exc)
-        stage_trace.event("solution_doc_publish_failed", status="failed", payload={"error": str(exc)})
-
     card_sender = send_bot_card_reply if card_reply_sender is None else card_reply_sender
     try:
         card = build_solution_review_card(
@@ -990,6 +1036,7 @@ def _publish_via_external_approval(
     *,
     solution_path: Path,
     solution_markdown_path: Path,
+    solution_doc_url: str | None,
     message_id: str,
     event_source: RequirementSource,
     stage_trace: StageTrace,
@@ -1028,7 +1075,7 @@ def _publish_via_external_approval(
         run_id=run_id,
         summary=summary,
         risk_level=risk,
-        solution_markdown_path=str(solution_markdown_path),
+        solution_markdown_path=solution_doc_url or str(solution_markdown_path),
     )
 
     # Update checkpoint with approval instance info
@@ -1054,7 +1101,7 @@ def _publish_via_external_approval(
         f"技术方案已生成，已为你发起审批「技术方案评审 - {run_id}」。\n"
         f"请在飞书「审批」应用中查看并处理。\n"
         f"运行 ID：{run_id}\n"
-        f"方案文档：{solution_markdown_path}"
+        f"方案文档：{solution_doc_url or solution_markdown_path}"
     )
     try:
         sender(
@@ -1505,9 +1552,11 @@ def approve_checkpoint_run(
         delivery_path = Path(run_payload["delivery_artifact"])
         sender = send_bot_reply if reply_sender is None else reply_sender
         if sender is not None:
+            delivery_url = _publication_url(run_payload, "delivery")
+            delivery_target = delivery_url or str(delivery_path)
             sender(
                 event_source.source_id,
-                f"已确认代码评审并生成交付包：{run_payload['run_id']}。产物：{delivery_path}",
+                f"已确认代码评审并生成交付包：{run_payload['run_id']}。\n交付文档：{delivery_target}\n本地产物：{delivery_path}",
                 _idempotency_key(run_payload['run_id'], "code-review-approved"),
             )
         return PipelineResult(
@@ -1531,9 +1580,11 @@ def approve_checkpoint_run(
                 _idempotency_key(run_payload['run_id'], "checkpoint-approved"),
             )
         else:
+            review_url = _publication_url(run_payload, "code_review")
+            artifact_target = review_url or str(final_artifact_path)
             sender(
                 event_source.source_id,
-                f"已确认技术方案并完成代码生成、测试生成和代码评审：{run_payload['run_id']}。产物：{final_artifact_path}",
+                f"已确认技术方案并完成代码生成、测试生成和代码评审：{run_payload['run_id']}。\n评审文档：{artifact_target}\n本地产物：{final_artifact_path}",
                 _idempotency_key(run_payload['run_id'], "code-review-generated"),
             )
     return PipelineResult(
@@ -1578,6 +1629,14 @@ def run_code_generation_after_approval(run_dir: Path, run_payload: dict[str, Any
             thinking_timer.cancel()
         code_path = write_code_generation_artifact(artifact, run_dir / "code-generation.json")
         diff_path = write_code_diff(artifact, run_dir / "code.diff")
+        code_markdown_path = run_dir / "code-generation.md"
+        code_markdown = render_code_generation_markdown(
+            artifact,
+            run_id=run_payload["run_id"],
+            artifact_path=code_path,
+            diff_path=diff_path,
+        )
+        code_markdown_path.write_text(code_markdown, encoding="utf-8")
         ended_at = utc_now()
         set_stage_status(
             run_payload["stages"],
@@ -1591,6 +1650,7 @@ def run_code_generation_after_approval(run_dir: Path, run_payload: dict[str, Any
         )
         run_payload["status"] = "success"
         run_payload["code_generation_artifact"] = str(code_path)
+        run_payload["code_generation_markdown"] = str(code_markdown_path)
         run_payload["code_diff"] = str(diff_path)
         run_payload["code_generation_summary"] = artifact.get("summary")
         run_payload["audit"] = build_audit_payload(trace, run_dir)
@@ -1599,6 +1659,13 @@ def run_code_generation_after_approval(run_dir: Path, run_payload: dict[str, Any
             status="success",
             payload={"path": str(code_path), "schema_version": artifact.get("schema_version")},
         )
+        publish_artifact_document(
+            run_payload,
+            "code_generation",
+            f"代码生成 - {run_payload['run_id']}",
+            code_markdown,
+        )
+        _reply_stage_publication(run_payload, "code_generation", "代码生成文档", code_markdown_path)
         return run_test_generation_after_code_generation(run_dir, run_payload)
     except QualityGateError as exc:
         ended_at = utc_now()
@@ -1689,6 +1756,14 @@ def run_test_generation_after_code_generation(run_dir: Path, run_payload: dict[s
             thinking_timer.cancel()
         test_path = write_test_generation_artifact(artifact, run_dir / "test-generation.json")
         diff_path = write_test_diff(artifact, run_dir / "test.diff")
+        test_markdown_path = run_dir / "test-generation.md"
+        test_markdown = render_test_generation_markdown(
+            artifact,
+            run_id=run_payload["run_id"],
+            artifact_path=test_path,
+            diff_path=diff_path,
+        )
+        test_markdown_path.write_text(test_markdown, encoding="utf-8")
         ended_at = utc_now()
         set_stage_status(
             run_payload["stages"],
@@ -1702,6 +1777,7 @@ def run_test_generation_after_code_generation(run_dir: Path, run_payload: dict[s
         )
         run_payload["status"] = "success"
         run_payload["test_generation_artifact"] = str(test_path)
+        run_payload["test_generation_markdown"] = str(test_markdown_path)
         run_payload["test_diff"] = str(diff_path)
         run_payload["test_generation_summary"] = artifact.get("summary")
         run_payload["audit"] = build_audit_payload(trace, run_dir)
@@ -1710,6 +1786,13 @@ def run_test_generation_after_code_generation(run_dir: Path, run_payload: dict[s
             status="success",
             payload={"path": str(test_path), "schema_version": artifact.get("schema_version")},
         )
+        publish_artifact_document(
+            run_payload,
+            "test_generation",
+            f"测试生成 - {run_payload['run_id']}",
+            test_markdown,
+        )
+        _reply_stage_publication(run_payload, "test_generation", "测试生成文档", test_markdown_path)
         write_json(run_dir / "run.json", run_payload)
         return run_code_review_after_test_generation(run_dir, run_payload)
     except (ConfigError, LlmError, ValueError) as exc:
@@ -1886,10 +1969,26 @@ def run_repair_after_code_review(
     code_artifact = build_code_generation_artifact(solution, config.llm, stage_trace=code_trace)
     code_path = write_code_generation_artifact(code_artifact, run_dir / f"code-generation-attempt-{attempt}.json")
     diff_path = write_code_diff(code_artifact, run_dir / f"code-attempt-{attempt}.diff")
+    code_markdown_path = run_dir / f"code-generation-attempt-{attempt}.md"
+    code_markdown = render_code_generation_markdown(
+        code_artifact,
+        run_id=run_payload["run_id"],
+        artifact_path=code_path,
+        diff_path=diff_path,
+    )
+    code_markdown_path.write_text(code_markdown, encoding="utf-8")
     set_stage_status(run_payload["stages"], "code_generation", "success", ended_at=utc_now(), artifact=str(code_path))
     run_payload["code_generation_artifact"] = str(code_path)
+    run_payload["code_generation_markdown"] = str(code_markdown_path)
     run_payload["code_diff"] = str(diff_path)
     run_payload["code_generation_summary"] = code_artifact.get("summary")
+    publish_artifact_document(
+        run_payload,
+        "code_generation",
+        f"代码生成 - {run_payload['run_id']} - attempt {attempt}",
+        code_markdown,
+    )
+    _reply_stage_publication(run_payload, "code_generation", "代码生成文档", code_markdown_path)
 
     test_trace = trace.stage("test_generation")
     set_stage_status(run_payload["stages"], "test_generation", "running", started_at=utc_now())
@@ -1907,10 +2006,26 @@ def run_repair_after_code_review(
     )
     test_path = write_test_generation_artifact(test_artifact, run_dir / f"test-generation-attempt-{attempt}.json")
     test_diff_path = write_test_diff(test_artifact, run_dir / f"test-attempt-{attempt}.diff")
+    test_markdown_path = run_dir / f"test-generation-attempt-{attempt}.md"
+    test_markdown = render_test_generation_markdown(
+        test_artifact,
+        run_id=run_payload["run_id"],
+        artifact_path=test_path,
+        diff_path=test_diff_path,
+    )
+    test_markdown_path.write_text(test_markdown, encoding="utf-8")
     set_stage_status(run_payload["stages"], "test_generation", "success", ended_at=utc_now(), artifact=str(test_path))
     run_payload["test_generation_artifact"] = str(test_path)
+    run_payload["test_generation_markdown"] = str(test_markdown_path)
     run_payload["test_diff"] = str(test_diff_path)
     run_payload["test_generation_summary"] = test_artifact.get("summary")
+    publish_artifact_document(
+        run_payload,
+        "test_generation",
+        f"测试生成 - {run_payload['run_id']} - attempt {attempt}",
+        test_markdown,
+    )
+    _reply_stage_publication(run_payload, "test_generation", "测试生成文档", test_markdown_path)
     run_payload["audit"] = build_audit_payload(trace, run_dir)
     write_json(run_dir / "run.json", run_payload)
     return run_code_review_after_test_generation(run_dir, run_payload, attempt=attempt, allow_auto_repair=False)
@@ -1970,6 +2085,13 @@ def run_delivery_after_code_review_approval(
         run_payload["checkpoint_status"] = checkpoint_payload.get("status")
         run_payload["checkpoint_artifact"] = str(checkpoint_path)
         run_payload["audit"] = build_audit_payload(trace, run_dir)
+        delivery_markdown = delivery_markdown_path.read_text(encoding="utf-8")
+        publish_artifact_document(
+            run_payload,
+            "delivery",
+            f"交付包 - {run_payload['run_id']}",
+            delivery_markdown,
+        )
         stage_trace.event(
             "delivery_artifact_written",
             status="success",
@@ -2030,6 +2152,7 @@ def _publish_code_review_via_external_approval(
     *,
     review_path: Path,
     review_markdown_path: Path,
+    review_doc_url: str | None = None,
     sender_id: str,
     stage_trace: StageTrace,
 ) -> None:
@@ -2060,7 +2183,7 @@ def _publish_code_review_via_external_approval(
         stage="code_review",
         summary=summary,
         risk_level=risk,
-        doc_path=str(review_markdown_path),
+        doc_path=review_doc_url or str(review_markdown_path),
         form_fields=[
             {"name": "blocking_count", "value": f"阻塞问题数：{blocking_count}"},
         ],
@@ -2089,7 +2212,7 @@ def _publish_code_review_via_external_approval(
             f"代码评审已生成，已为你发起审批「代码评审 - {run_id}」。\n"
             f"请在飞书「审批」应用中查看并处理。\n"
             f"运行 ID：{run_id}\n"
-            f"评审报告：{review_markdown_path}"
+            f"评审报告：{review_doc_url or review_markdown_path}"
         )
         try:
             sender(
@@ -2139,6 +2262,22 @@ def publish_code_review_checkpoint(
     config = load_config()
     approval_cfg = config.approval
     sender_id = _resolve_sender_id(run_payload, event_source)
+    review_doc_url: str | None = None
+    try:
+        review_markdown_content = Path(review_markdown_path).read_text(encoding="utf-8")
+        doc_result = publish_artifact_document(
+            run_payload,
+            "code_review",
+            f"代码评审 - {run_payload['run_id']}",
+            review_markdown_content,
+        )
+        review_doc_url = doc_result.get("url") or None
+        event_name = "review_doc_published" if doc_result.get("status") == "success" else "review_doc_publish_failed"
+        stage_trace.event(event_name, status=str(doc_result.get("status") or "failed"), payload=doc_result)
+    except Exception as exc:
+        review_doc_url = None
+        run_payload["review_doc_publish_error"] = str(exc)
+        stage_trace.event("review_doc_publish_failed", status="failed", payload={"error": str(exc)})
 
     if approval_cfg.enabled and sender_id:
         try:
@@ -2148,6 +2287,7 @@ def publish_code_review_checkpoint(
                 review_artifact,
                 review_path=review_path,
                 review_markdown_path=review_markdown_path,
+                review_doc_url=review_doc_url,
                 sender_id=sender_id,
                 stage_trace=stage_trace,
             )
@@ -2156,22 +2296,6 @@ def publish_code_review_checkpoint(
             stage_trace.event("code_review_approval_creation_failed", status="failed", payload={"error": str(exc)})
 
     if card_reply_sender is not None:
-        review_doc_url: str | None = None
-        try:
-            folder_token = config.lark.prd_folder_token or None
-            review_markdown_content = Path(review_markdown_path).read_text(encoding="utf-8")
-            doc_result = publish_document(
-                title=f"代码评审 - {run_payload['run_id']}",
-                markdown=review_markdown_content,
-                folder_token=folder_token,
-            )
-            review_doc_url = doc_result.get("url") or None
-            stage_trace.event("review_doc_published", status="success", payload={"url": review_doc_url})
-        except Exception as exc:
-            review_doc_url = None
-            run_payload["review_doc_publish_error"] = str(exc)
-            stage_trace.event("review_doc_publish_failed", status="failed", payload={"error": str(exc)})
-
         try:
             message_id = str((run_payload.get("trigger") or {}).get("message_id") or "")
             if message_id:
@@ -2380,15 +2504,25 @@ def publish_requirement_prd(
     }
     run_payload["publication"] = publication
     title = artifact["normalized_requirement"]["title"]
-    markdown = render_prd_markdown(artifact, run_id=run_payload["run_id"])
+    _markdown_path, markdown = write_requirement_markdown(run_payload, artifact)
     creator = create_prd_document_for_pipeline if prd_creator is None else prd_creator
     card_sender = send_bot_card_reply if card_reply_sender is None else card_reply_sender
     try:
         stage_trace.event("prd_creation_started", status="running")
-        prd = creator(title, markdown)
+        doc_result = publish_artifact_document(
+            run_payload,
+            "requirement_intake",
+            title,
+            markdown,
+            publisher=lambda doc_title, doc_markdown, _folder_token: creator(doc_title, doc_markdown),
+            folder_token=None if prd_creator is None else "",
+        )
+        if doc_result["status"] != "success":
+            raise RuntimeError(doc_result.get("error") or "PRD 文档发布失败")
+        prd = {"document_id": doc_result.get("document_id"), "url": doc_result.get("url")}
         publication["prd"] = prd
         stage_trace.event("prd_created", status="success", payload=prd)
-        prd_url = prd.get("url") or ""
+        prd_url = doc_result.get("url") or ""
         card = build_prd_preview_card(
             artifact,
             run_id=run_payload["run_id"],
@@ -2412,6 +2546,15 @@ def publish_requirement_prd(
         if publication["card_reply"] is None:
             publication["card_reply"] = {"status": "failed"}
         stage_trace.event("publication_failed", status="failed", payload={"error": str(exc)})
+
+
+def write_requirement_markdown(run_payload: dict[str, Any], artifact: dict[str, Any]) -> tuple[Path, str]:
+    run_dir = Path(run_payload["run_dir"])
+    markdown_path = run_dir / "requirement.md"
+    markdown = render_prd_markdown(artifact, run_id=run_payload["run_id"])
+    markdown_path.write_text(markdown, encoding="utf-8")
+    run_payload["requirement_markdown"] = str(markdown_path)
+    return markdown_path, markdown
 
 
 def _print_no_default_chat_guidance() -> None:
@@ -2544,7 +2687,7 @@ def create_prd_document_for_pipeline(title: str, markdown: str) -> dict[str, Any
     folder_token = None
     if DEFAULT_CONFIG_PATH.exists():
         config = load_config()
-        folder_token = config.lark.prd_folder_token or None
+        folder_token = config.lark.artifact_folder_token or config.lark.prd_folder_token or None
     return create_prd_document(title, markdown, folder_token=folder_token)
 
 
@@ -2728,6 +2871,7 @@ def resume_from_clarification(
         json.dumps(requirement, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    write_requirement_markdown(run_payload, requirement)
 
     checkpoint = load_checkpoint(run_dir)
     checkpoint["status"] = "clarification_resolved"
@@ -2824,7 +2968,11 @@ def find_blocked_workspace_run(out_dir: Path, event_source: RequirementSource, *
 
 def is_workspace_resume_reply(text: str) -> bool:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return len(lines) == 1 and parse_workspace_directive(lines[0]) is not None
+    # 允许消息中包含 workspace 指令（作为第一行）以及可能的额外内容
+    # 只要第一行是有效的 workspace 指令即可
+    if not lines:
+        return False
+    return parse_workspace_directive(lines[0]) is not None
 
 
 def workspace_from_previous_solution(checkpoint: dict[str, Any]) -> dict[str, Any] | None:
@@ -3175,6 +3323,7 @@ def base_run_payload(
             "card_reply": None,
             "error": None,
         },
+        "artifact_publications": {},
     }
     if provider_override:
         payload["provider_override"] = provider_override

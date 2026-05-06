@@ -7,6 +7,7 @@ from typing import Any
 
 from devflow.checkpoint import parse_checkpoint_command, parse_system_command
 from devflow.intake.lark_cli import event_to_source
+from devflow.solution.workspace import parse_workspace_directive
 
 AppendCallback = Callable[[dict[str, Any]], None]
 
@@ -18,7 +19,13 @@ def _is_command_event(event: dict[str, Any]) -> bool:
         return False
     if content.startswith("/"):
         return parse_system_command(content) is not None
-    return parse_checkpoint_command(content) is not None
+    if parse_checkpoint_command(content) is not None:
+        return True
+    first_line = next(
+        (line.strip() for line in content.splitlines() if line.strip()),
+        "",
+    )
+    return bool(first_line and parse_workspace_directive(first_line) is not None)
 
 
 class _BufferEntry:

@@ -1,9 +1,41 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+
+LLM_AUDIT_FILE_RE = re.compile(
+    r"^(?:(?P<prefix>solution|code|test|review)-)?llm-(?P<kind>request|response)(?:-turn(?P<turn>\d+))?\.json$"
+)
+
+LLM_PREFIX_TO_STAGE = {
+    None: "requirement_intake",
+    "solution": "solution_design",
+    "code": "code_generation",
+    "test": "test_generation",
+    "review": "code_review",
+}
+
+STAGE_ORDER = {
+    "requirement_intake": 0,
+    "solution_design": 1,
+    "code_generation": 2,
+    "test_generation": 3,
+    "code_review": 4,
+    "delivery": 5,
+}
+
+ARTIFACT_MARKDOWN_SOURCES = {
+    "requirement_intake": ("requirement_markdown", "requirement.md"),
+    "solution_design": ("solution_markdown", "solution.md"),
+    "code_generation": ("code_generation_markdown", "code-generation.md"),
+    "test_generation": ("test_generation_markdown", "test-generation.md"),
+    "code_review": ("code_review_markdown", "code-review.md"),
+    "delivery": ("delivery_markdown", "delivery.md"),
+}
 
 
 def _parse_iso_timestamp(iso_str: str | None) -> datetime | None:
@@ -141,18 +173,14 @@ def compute_token_usage(out_dir: Path) -> list[dict[str, Any]]:
         total_completion = 0
         total_tokens = 0
 
-        for llm_file in run_dir.glob("*llm-response.json"):
-            try:
-                llm = json.loads(llm_file.read_text(encoding="utf-8-sig"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            usage = llm.get("usage") or {}
+        for call in get_run_llm_trace(run_dir):
+            usage = call.get("usage") or {}
             if usage:
                 total_prompt += usage.get("prompt_tokens", 0) or 0
                 total_completion += usage.get("completion_tokens", 0) or 0
                 total_tokens += usage.get("total_tokens", 0) or 0
             if not provider or provider == "default":
-                src = llm.get("usage_source")
+                src = call.get("provider")
                 if src:
                     provider = src
 
@@ -251,28 +279,39 @@ def get_run_llm_trace(run_dir: Path) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     if not run_dir.exists():
         return results
-    request_files: dict[str, Path] = {}
-    response_files: dict[str, Path] = {}
-    for f in run_dir.glob("*-llm-request.json"):
-        prefix = f.name.replace("-llm-request.json", "")
-        request_files[prefix] = f
-    for f in run_dir.glob("*-llm-response.json"):
-        prefix = f.name.replace("-llm-response.json", "")
-        response_files[prefix] = f
-    all_prefixes = sorted(set(request_files.keys()) | set(response_files.keys()))
-    for prefix in all_prefixes:
+    grouped: dict[tuple[str, int | None], dict[str, Path]] = {}
+    for path in run_dir.glob("*llm-*.json"):
+        parsed = _parse_llm_audit_filename(path.name)
+        if parsed is None:
+            continue
+        stage, turn, kind = parsed
+        grouped.setdefault((stage, turn), {})[kind] = path
+
+    for (stage, turn), files in sorted(
+        grouped.items(),
+        key=lambda item: (STAGE_ORDER.get(item[0][0], 99), item[0][1] or 0),
+    ):
         entry: dict[str, Any] = {
-            "stage": prefix,
+            "stage": stage,
             "system_prompt_summary": None,
             "user_prompt_summary": None,
             "content_summary": None,
+            "system_prompt": None,
+            "user_prompt": None,
+            "content": None,
             "usage": None,
             "duration_ms": None,
             "provider": None,
             "model": None,
+            "turn": turn,
+            "started_at": None,
+            "ended_at": None,
+            "request_path": None,
+            "response_path": None,
         }
-        req_path = request_files.get(prefix)
+        req_path = files.get("request")
         if req_path:
+            entry["request_path"] = str(req_path)
             try:
                 req = json.loads(req_path.read_text(encoding="utf-8-sig"))
                 messages = req.get("messages", [])
@@ -280,32 +319,28 @@ def get_run_llm_trace(run_dir: Path) -> list[dict[str, Any]]:
                 user_parts: list[str] = []
                 for msg in messages:
                     role = msg.get("role", "")
-                    content = msg.get("content", "")
-                    if isinstance(content, list):
-                        content = " ".join(
-                            str(c.get("text", "")) if isinstance(c, dict) else str(c)
-                            for c in content
-                        )
+                    content = _content_to_text(msg.get("content", ""))
                     if role == "system":
-                        system_parts.append(str(content)[:500])
+                        system_parts.append(content)
                     elif role == "user":
-                        user_parts.append(str(content)[:500])
-                entry["system_prompt_summary"] = "; ".join(system_parts) if system_parts else None
-                entry["user_prompt_summary"] = "; ".join(user_parts) if user_parts else None
+                        user_parts.append(content)
+                system_prompt = "\n\n".join(system_parts) if system_parts else None
+                user_prompt = "\n\n".join(user_parts) if user_parts else None
+                entry["system_prompt"] = system_prompt
+                entry["user_prompt"] = user_prompt
+                entry["system_prompt_summary"] = _summary(system_prompt, 500)
+                entry["user_prompt_summary"] = _summary(user_prompt, 500)
                 entry["model"] = req.get("model")
             except (OSError, json.JSONDecodeError):
                 pass
-        resp_path = response_files.get(prefix)
+        resp_path = files.get("response")
         if resp_path:
+            entry["response_path"] = str(resp_path)
             try:
                 resp = json.loads(resp_path.read_text(encoding="utf-8-sig"))
-                raw_content = resp.get("content", "")
-                if isinstance(raw_content, list):
-                    raw_content = " ".join(
-                        str(c.get("text", "")) if isinstance(c, dict) else str(c)
-                        for c in raw_content
-                    )
-                entry["content_summary"] = str(raw_content)[:1000] if raw_content else None
+                raw_content = _content_to_text(resp.get("content", ""))
+                entry["content"] = raw_content or None
+                entry["content_summary"] = _summary(raw_content, 1000)
                 usage = resp.get("usage")
                 if usage:
                     entry["usage"] = {
@@ -315,6 +350,8 @@ def get_run_llm_trace(run_dir: Path) -> list[dict[str, Any]]:
                     }
                 entry["duration_ms"] = resp.get("duration_ms")
                 entry["provider"] = resp.get("usage_source") or resp.get("provider")
+                entry["started_at"] = resp.get("started_at")
+                entry["ended_at"] = resp.get("ended_at")
             except (OSError, json.JSONDecodeError):
                 pass
         results.append(entry)
@@ -448,23 +485,12 @@ def get_run_detail(run_dir: Path) -> dict[str, Any]:
 
     llm_calls = get_run_llm_trace(run_dir)
 
-    _prefix_to_stage = {
-        "llm": "requirement_intake",
-        "solution": "solution_design",
-        "code-generation": "code_generation",
-        "test-generation": "test_generation",
-        "code-review": "code_review",
-        "delivery": "delivery",
-    }
     token_summary: dict[str, dict[str, Any]] = {}
-    for llm_file in run_dir.glob("*-llm-response.json"):
-        prefix = llm_file.name.replace("-llm-response.json", "")
-        stage_name = _prefix_to_stage.get(prefix, prefix)
-        try:
-            resp = json.loads(llm_file.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError):
+    for call in llm_calls:
+        stage_name = call.get("stage")
+        if not stage_name:
             continue
-        usage = resp.get("usage") or {}
+        usage = call.get("usage") or {}
         if stage_name not in token_summary:
             token_summary[stage_name] = {
                 "prompt_tokens": 0,
@@ -478,18 +504,12 @@ def get_run_detail(run_dir: Path) -> dict[str, Any]:
             entry["prompt_tokens"] += usage.get("prompt_tokens", 0) or 0
             entry["completion_tokens"] += usage.get("completion_tokens", 0) or 0
             entry["total_tokens"] += usage.get("total_tokens", 0) or 0
-        provider = resp.get("usage_source")
+        provider = call.get("provider")
         if provider:
             entry["provider"] = provider
-        req_path = run_dir / f"{prefix}-llm-request.json"
-        if req_path.exists():
-            try:
-                req = json.loads(req_path.read_text(encoding="utf-8-sig"))
-                model = req.get("model")
-                if model:
-                    entry["model"] = model
-            except (OSError, json.JSONDecodeError):
-                pass
+        model = call.get("model")
+        if model:
+            entry["model"] = model
 
     delivery_path = run_dir / "delivery.json"
     delivery = None
@@ -529,19 +549,72 @@ def get_run_diff(run_dir: Path, stage: str) -> str | None:
 
 
 def get_run_artifact_markdown(run_dir: Path, stage: str) -> str | None:
-    stage_map = {
-        "requirement_intake": "requirement.md",
-        "solution_design": "solution.md",
-        "code_review": "code-review.md",
-        "delivery": "delivery.md",
-    }
-    filename = stage_map.get(stage)
-    if not filename:
+    source = ARTIFACT_MARKDOWN_SOURCES.get(stage)
+    if not source:
         return None
-    md_path = run_dir / filename
-    if not md_path.exists():
+    path_key, fallback_filename = source
+    candidates: list[Path] = []
+
+    run_payload = _load_run_payload_for_metrics(run_dir)
+    configured_path = run_payload.get(path_key) if run_payload else None
+    if isinstance(configured_path, str) and configured_path.strip():
+        candidates.append(_resolve_artifact_path(run_dir, configured_path))
+    candidates.append(run_dir / fallback_filename)
+
+    for md_path in candidates:
+        if not md_path.exists():
+            continue
+        try:
+            return md_path.read_text(encoding="utf-8-sig")
+        except OSError:
+            continue
+    return None
+
+
+def _parse_llm_audit_filename(name: str) -> tuple[str, int | None, str] | None:
+    match = LLM_AUDIT_FILE_RE.match(name)
+    if match is None:
+        return None
+    stage = LLM_PREFIX_TO_STAGE.get(match.group("prefix"))
+    if stage is None:
+        return None
+    turn_text = match.group("turn")
+    turn = int(turn_text) if turn_text else None
+    return stage, turn, match.group("kind")
+
+
+def _content_to_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return " ".join(
+            _content_to_text(item.get("text", "")) if isinstance(item, dict) else str(item)
+            for item in value
+        )
+    return str(value)
+
+
+def _summary(value: str | None, limit: int) -> str | None:
+    if not value:
+        return None
+    return value[:limit]
+
+
+def _load_run_payload_for_metrics(run_dir: Path) -> dict[str, Any] | None:
+    run_json = run_dir / "run.json"
+    if not run_json.exists():
         return None
     try:
-        return md_path.read_text(encoding="utf-8-sig")
-    except OSError:
+        payload = json.loads(run_json.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
         return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _resolve_artifact_path(run_dir: Path, path_text: str) -> Path:
+    path = Path(path_text)
+    if path.is_absolute():
+        return path
+    return run_dir / path

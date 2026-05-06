@@ -12,6 +12,7 @@ from devflow.cli import main
 from devflow.config import LlmConfig
 from devflow.test.agent import build_test_generation_artifact, write_test_diff, write_test_generation_artifact
 from devflow.test.runners import detect_test_stack
+from devflow.trace import RunTrace
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[1] / ".test-tmp" / "test-generation"
@@ -181,6 +182,7 @@ class TestGenerationTests(unittest.TestCase):
                 solution_path=workspace / "solution.json",
                 code_generation_path=workspace / "code-generation.json",
                 opener=opener,
+                stage_trace=RunTrace("run_test", workspace).stage("test_generation"),
             )
 
             self.assertEqual(artifact["schema_version"], "devflow.test_generation.v1")
@@ -188,6 +190,12 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(artifact["generated_tests"], ["tests/test_calculator.py"])
             self.assertEqual(artifact["test_commands"][0]["returncode"], 0)
             self.assertTrue((workspace / "tests" / "test_calculator.py").exists())
+            self.assertTrue((workspace / "test-llm-request-turn1.json").exists())
+            self.assertTrue((workspace / "test-llm-response-turn1.json").exists())
+            self.assertTrue((workspace / "test-llm-request-turn2.json").exists())
+            self.assertTrue((workspace / "test-llm-response-turn2.json").exists())
+            self.assertTrue((workspace / "test-llm-request-turn3.json").exists())
+            self.assertTrue((workspace / "test-llm-response-turn3.json").exists())
 
     def test_cli_generates_tests_from_explicit_artifacts(self) -> None:
         responses = [

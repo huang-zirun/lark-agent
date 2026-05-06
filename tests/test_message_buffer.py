@@ -42,6 +42,29 @@ class MessageBufferMergeTests(unittest.TestCase):
         self.assertIn("第一行", source.content)
         self.assertIn("第二行", source.content)
 
+    def test_workspace_directive_flushes_buffered_requirement(self) -> None:
+        appended_events = []
+        events = [
+            bot_event("我想要制作一个贪吃蛇小游戏，夏天主题", message_id="om_1"),
+            bot_event("新项目：snake-game", message_id="om_2"),
+        ]
+
+        results = list(
+            MessageBuffer(
+                iter(events),
+                merge_window_seconds=5,
+                on_append=appended_events.append,
+            )
+        )
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(
+            event_to_source(results[0]).content,
+            "我想要制作一个贪吃蛇小游戏，夏天主题",
+        )
+        self.assertEqual(event_to_source(results[1]).content, "新项目：snake-game")
+        self.assertEqual(appended_events, [])
+
     def test_messages_outside_merge_window_create_separate_events(self) -> None:
         def delayed_events():
             yield bot_event("消息A", message_id="om_1")

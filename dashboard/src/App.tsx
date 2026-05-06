@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { PipelineStepper } from "@/components/PipelineStepper";
 import { StageDetailPanel } from "@/components/StageDetailPanel";
-import { LlmTracePanel } from "@/components/LlmTracePanel";
+import { StageDetailView } from "@/components/StageDetailView";
 import { EmptyState } from "@/components/EmptyState";
 import { Header } from "@/components/Header";
 import { WifiOff, RefreshCw } from "lucide-react";
@@ -16,7 +16,6 @@ import {
 function App() {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedStage, setSelectedStage] = useState<string | null>(null);
-  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
 
   const { data: activeRun, loading: activeLoading, error: activeError } = useActiveRun();
   const { data: runList, loading: listLoading, refetch: refetchList, error: listError } = useRunList();
@@ -41,10 +40,6 @@ function App() {
 
   const handleStageClick = useCallback((stageName: string) => {
     setSelectedStage(stageName);
-    const el = document.getElementById(`stage-${stageName}`);
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
   }, []);
 
   const handleRefresh = useCallback(() => {
@@ -109,22 +104,19 @@ function App() {
           />
           <StageDetailPanel
             stages={runDetail?.stages ?? []}
-            artifacts={runDetail?.artifacts ?? {}}
-            checkpoints={runDetail?.checkpoints ?? []}
             tokenSummary={runDetail?.token_summary ?? {}}
-            delivery={runDetail?.delivery ?? null}
+            selectedStage={selectedStage}
+            llmCalls={llmCalls}
+          />
+        </main>
+        <div className="w-[420px] shrink-0 border-l border-border">
+          <StageDetailView
             selectedStage={selectedStage}
             runId={selectedRunId}
             llmCalls={llmCalls}
-            onArtifactViewDetail={() => {}}
-            onDiffView={() => {}}
+            llmLoading={llmLoading}
           />
-        </main>
-        {!rightPanelCollapsed && (
-          <div className="w-[360px] shrink-0 border-l border-border overflow-y-auto">
-            <LlmTracePanel llmCalls={llmCalls} loading={llmLoading} selectedStage={selectedStage} />
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );

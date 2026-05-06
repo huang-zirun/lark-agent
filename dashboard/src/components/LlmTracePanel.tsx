@@ -101,7 +101,7 @@ function PromptSection({
   );
 }
 
-function LlmCallItem({
+export function LlmCallItem({
   record,
   index,
   totalInStage,
@@ -110,6 +110,11 @@ function LlmCallItem({
   index: number;
   totalInStage: number;
 }) {
+  const turnLabel = record.turn ?? index + 1;
+  const systemPrompt = record.system_prompt || record.system_prompt_summary || "";
+  const userPrompt = record.user_prompt || record.user_prompt_summary || "";
+  const modelOutput = record.content || record.content_summary || "";
+
   return (
     <Collapsible>
       <CollapsibleTrigger asChild>
@@ -124,7 +129,7 @@ function LlmCallItem({
             </Badge>
             {totalInStage > 1 && (
               <span className="text-[10px] text-muted-foreground">
-                #{index + 1}
+                #{turnLabel}
               </span>
             )}
           </span>
@@ -143,19 +148,19 @@ function LlmCallItem({
           <PromptSection
             label="System Prompt"
             icon={MessageSquare}
-            content={record.system_prompt_summary || ""}
+            content={systemPrompt}
             truncateLen={200}
           />
           <PromptSection
             label="User Prompt"
             icon={MessageSquare}
-            content={record.user_prompt_summary || ""}
+            content={userPrompt}
             truncateLen={200}
           />
           <PromptSection
             label="模型输出"
             icon={Sparkles}
-            content={record.content_summary || record.content || ""}
+            content={modelOutput}
             truncateLen={500}
           />
 
@@ -184,6 +189,11 @@ function LlmCallItem({
             {record.model && (
               <span>
                 模型: <span className="font-mono">{record.model}</span>
+              </span>
+            )}
+            {record.turn != null && (
+              <span>
+                Turn: <span className="font-mono">{record.turn}</span>
               </span>
             )}
           </div>
