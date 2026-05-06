@@ -5,15 +5,17 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from devflow.checkpoint import SystemCommand, parse_system_command
+from devflow.checkpoint import SystemCommand, parse_system_command, write_checkpoint
 from devflow.intake.models import RequirementSource
 from devflow.pipeline import (
     _build_help_card,
     _build_status_card,
     _find_active_runs,
+    find_blocked_workspace_run,
     handle_system_command,
     maybe_process_checkpoint_event,
 )
+from devflow.session import SessionManager
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[1] / ".test-tmp"
@@ -243,6 +245,149 @@ class MaybeProcessCheckpointEventRoutingTests(unittest.TestCase):
             card_reply_sender=None,
         )
         self.assertIsNone(result)
+
+
+def write_blocked_run(
+    out_dir: Path,
+    run_id: str,
+    *,
+    chat_id: str = "oc_test",
+    sender_id: str = "ou_test",
+    blocked_reason: str = "缺少仓库上下文。",
+) -> Path:
+    run_dir = out_dir / run_id
+    run_dir.mkdir(exist_ok=True)
+    payload = {
+        "run_id": run_id,
+        "status": "blocked",
+        "lifecycle_status": "blocked",
+        "started_at": "2026-05-05T10:00:00Z",
+        "trigger": {"chat_id": chat_id, "sender_id": sender_id},
+        "stages": [{"name": "solution_design", "status": "blocked"}],
+    }
+    (run_dir / "run.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    checkpoint = {
+        "status": "blocked",
+        "attempt": 1,
+        "blocked_reason": blocked_reason,
+    }
+    write_checkpoint(run_dir, checkpoint)
+    return run_dir
+
+
+class FindBlockedWorkspaceRunTests(unittest.TestCase):
+    def test_finds_blocked_run_by_session(self) -> None:
+        out_dir = temp_out_dir()
+        run_id = f"run-blocked-{uuid4().hex}"
+        write_blocked_run(out_dir, run_id)
+
+        session = SessionManager()
+        session.register("oc_test", "ou_test", run_id, "blocked")
+
+        source = make_source("新项目：snake-game")
+        result = find_blocked_workspace_run(out_dir, source, session=session)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.name, run_id)
+
+    def test_finds_blocked_run_by_filesystem_scan(self) -> None:
+        out_dir = temp_out_dir()
+        run_id = f"run-blocked-{uuid4().hex}"
+        write_blocked_run(out_dir, run_id)
+
+        source = make_source("新项目：snake-game")
+        result = find_blocked_workspace_run(out_dir, source, session=None)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.name, run_id)
+
+    def test_returns_none_for_non_workspace_content(self) -> None:
+        out_dir = temp_out_dir()
+        run_id = f"run-blocked-{uuid4().hex}"
+        write_blocked_run(out_dir, run_id)
+
+        source = make_source("我想要制作一个贪吃蛇小游戏")
+        result = find_blocked_workspace_run(out_dir, source, session=None)
+        self.assertIsNone(result)
+
+    def test_returns_none_when_no_blocked_run(self) -> None:
+        out_dir = temp_out_dir()
+        source = make_source("新项目：snake-game")
+        result = find_blocked_workspace_run(out_dir, source, session=None)
+        self.assertIsNone(result)
+
+    def test_returns_none_for_different_user(self) -> None:
+        out_dir = temp_out_dir()
+        run_id = f"run-blocked-{uuid4().hex}"
+        write_blocked_run(out_dir, run_id, chat_id="oc_other", sender_id="ou_other")
+
+        source = make_source("新项目：snake-game", chat_id="oc_test", sender_id="ou_test")
+        result = find_blocked_workspace_run(out_dir, source, session=None)
+        self.assertIsNone(result)
+
+    def test_session_takes_priority_over_filesystem_scan(self) -> None:
+        out_dir = temp_out_dir()
+        run_id_session = f"run-session-{uuid4().hex}"
+        run_id_fs = f"run-fs-{uuid4().hex}"
+        write_blocked_run(out_dir, run_id_session)
+        write_blocked_run(out_dir, run_id_fs)
+
+        session = SessionManager()
+        session.register("oc_test", "ou_test", run_id_session, "blocked")
+
+        source = make_source("新项目：snake-game")
+        result = find_blocked_workspace_run(out_dir, source, session=session)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.name, run_id_session)
+
+
+class MaybeProcessCheckpointBlockedRunTests(unittest.TestCase):
+    def test_workspace_directive_routes_to_blocked_run_via_session(self) -> None:
+        out_dir = temp_out_dir()
+        run_id = f"run-blocked-{uuid4().hex}"
+        write_blocked_run(out_dir, run_id)
+
+        session = SessionManager()
+        session.register("oc_test", "ou_test", run_id, "blocked")
+
+        source = make_source("新项目：snake-game")
+        blocked_dir = find_blocked_workspace_run(out_dir, source, session=session)
+        self.assertIsNotNone(blocked_dir)
+        self.assertEqual(blocked_dir.name, run_id)
+
+    def test_non_workspace_content_appends_to_blocked_run(self) -> None:
+        out_dir = temp_out_dir()
+        run_id = f"run-blocked-{uuid4().hex}"
+        write_blocked_run(out_dir, run_id)
+
+        session = SessionManager()
+        session.register("oc_test", "ou_test", run_id, "blocked")
+
+        source = make_source("我想要制作一个贪吃蛇小游戏，夏天主题")
+        result = maybe_process_checkpoint_event(
+            source,
+            out_dir=out_dir,
+            reply_sender=None,
+            card_reply_sender=None,
+            session=session,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.status, "appended")
+        self.assertEqual(result.run_id, run_id)
+
+    def test_repo_directive_routes_to_blocked_run(self) -> None:
+        out_dir = temp_out_dir()
+        run_id = f"run-blocked-{uuid4().hex}"
+        write_blocked_run(out_dir, run_id)
+
+        session = SessionManager()
+        session.register("oc_test", "ou_test", run_id, "blocked")
+
+        source = make_source("仓库：D:\\path\\to\\repo")
+        blocked_dir = find_blocked_workspace_run(out_dir, source, session=session)
+        self.assertIsNotNone(blocked_dir)
+        self.assertEqual(blocked_dir.name, run_id)
 
 
 if __name__ == "__main__":

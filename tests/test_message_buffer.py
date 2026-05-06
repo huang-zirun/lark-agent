@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import unittest
 
@@ -19,6 +20,32 @@ def bot_event(
             "chat_id": chat_id,
             "sender_id": sender_id,
             "content": {"text": text},
+        }
+    }
+
+
+def lark_sdk_event(
+    text: str,
+    message_id: str = "om_evt",
+    chat_id: str = "oc_123",
+    open_id: str = "ou_123",
+) -> dict:
+    return {
+        "event": {
+            "sender": {
+                "sender_id": {
+                    "union_id": f"on_{open_id[3:]}",
+                    "user_id": open_id[3:],
+                    "open_id": open_id,
+                },
+                "sender_type": "user",
+                "tenant_key": "tenant_1",
+            },
+            "message": {
+                "message_id": message_id,
+                "chat_id": chat_id,
+                "content": json.dumps({"text": text}, ensure_ascii=False),
+            },
         }
     }
 
@@ -191,6 +218,68 @@ class MessageBufferMergeTests(unittest.TestCase):
         source = event_to_source(results[0])
         parts = source.content.split("\n")
         self.assertEqual(parts, ["第一", "第二", "第三"])
+
+
+class LarkSdkEventFormatTests(unittest.TestCase):
+    def test_sender_id_extracted_from_nested_sender(self) -> None:
+        event = lark_sdk_event("hello", open_id="ou_abc")
+        source = event_to_source(event)
+        self.assertEqual(source.metadata["sender_id"], "ou_abc")
+
+    def test_chat_id_extracted_from_nested_message(self) -> None:
+        event = lark_sdk_event("hello", chat_id="oc_xyz")
+        source = event_to_source(event)
+        self.assertEqual(source.metadata["chat_id"], "oc_xyz")
+
+    def test_content_extracted_from_json_string_in_message(self) -> None:
+        event = lark_sdk_event("新项目：snake-game")
+        source = event_to_source(event)
+        self.assertEqual(source.content, "新项目：snake-game")
+
+    def test_workspace_directive_flushes_buffered_requirement_in_sdk_format(self) -> None:
+        events = [
+            lark_sdk_event("我想要制作一个贪吃蛇小游戏，夏天主题", message_id="om_1"),
+            lark_sdk_event("新项目：snake-game", message_id="om_2"),
+        ]
+
+        results = list(
+            MessageBuffer(
+                iter(events),
+                merge_window_seconds=5,
+            )
+        )
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(
+            event_to_source(results[0]).content,
+            "我想要制作一个贪吃蛇小游戏，夏天主题",
+        )
+        self.assertEqual(event_to_source(results[1]).content, "新项目：snake-game")
+
+    def test_same_user_key_for_flat_and_nested_sender(self) -> None:
+        flat = bot_event("hello", sender_id="ou_abc")
+        nested = lark_sdk_event("hello", open_id="ou_abc")
+        flat_source = event_to_source(flat)
+        nested_source = event_to_source(nested)
+        self.assertEqual(flat_source.metadata["sender_id"], nested_source.metadata["sender_id"])
+
+    def test_messages_merged_in_sdk_format(self) -> None:
+        events = [
+            lark_sdk_event("第一行", message_id="om_1"),
+            lark_sdk_event("第二行", message_id="om_2"),
+        ]
+
+        results = list(
+            MessageBuffer(
+                iter(events),
+                merge_window_seconds=5,
+            )
+        )
+
+        self.assertEqual(len(results), 1)
+        source = event_to_source(results[0])
+        self.assertIn("第一行", source.content)
+        self.assertIn("第二行", source.content)
 
 
 if __name__ == "__main__":
