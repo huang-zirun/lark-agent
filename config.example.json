@@ -16,7 +16,7 @@
     "test_doc": "",
     "prd_folder_token": ""
   },
-  "workspace": {
+  "workspace": {s
     "root": "",
     "default_repo": "",
     "projects": [
@@ -44,6 +44,7 @@
     "default_chat_id": "",
     "max_queue_size": 5,
     "message_merge_window_seconds": 5,
+    "session_timeout_seconds": 1800,
     "progress_notifications_enabled": true
   },
   "reference": {
