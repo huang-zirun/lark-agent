@@ -5,7 +5,7 @@
     "model": "",
     "base_url": "",
     "temperature": 0.2,
-    "max_tokens": 2000,
+    "max_tokens": 4096,
     "timeout_seconds": 120,
     "response_format_json": false
   },
@@ -16,7 +16,7 @@
     "test_doc": "",
     "prd_folder_token": ""
   },
-  "workspace": {s
+  "workspace": {
     "root": "",
     "default_repo": "",
     "projects": [

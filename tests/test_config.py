@@ -60,7 +60,7 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(config.lark.test_doc, "doc_123")
         self.assertEqual(config.llm.temperature, 0.2)
-        self.assertEqual(config.llm.max_tokens, 2000)
+        self.assertEqual(config.llm.max_tokens, 4096)
         self.assertEqual(config.llm.timeout_seconds, 120)
         self.assertFalse(config.llm.response_format_json)
 
