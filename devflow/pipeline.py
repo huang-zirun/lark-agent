@@ -70,6 +70,7 @@ from devflow.review.agent import (
     write_code_review_artifact,
 )
 from devflow.review.render import render_code_review_markdown
+from devflow.session import SessionManager, TERMINAL_STATUSES
 from devflow.solution.designer import build_solution_design_artifact, load_requirement_artifact, write_solution_artifact
 from devflow.solution.render import render_solution_markdown
 from devflow.solution.workspace import WorkspaceError, parse_workspace_directive, resolve_workspace
@@ -91,6 +92,155 @@ def _idempotency_key(run_id: str, suffix: str) -> str:
     key = f"df-{short_id}-{suffix}"
     # Hard cap at 64 chars to be safe
     return key[:64]
+
+
+def _update_session_from_result(
+    session: SessionManager | None,
+    chat_id: str,
+    sender_id: str,
+    run_id: str,
+    run_payload: dict[str, Any],
+) -> None:
+    if session is None or not chat_id or not sender_id:
+        return
+    status = run_payload.get("status") or ""
+    if status in TERMINAL_STATUSES:
+        session.unregister(chat_id, sender_id)
+    elif status in ("waiting_clarification", "blocked", "waiting_approval", "waiting_approval_with_warnings"):
+        session.update_status(chat_id, sender_id, status)
+
+
+def _route_active_session(
+    event_source: RequirementSource,
+    *,
+    session: SessionManager,
+    out_dir: Path,
+    reply_sender: ReplySender | None,
+) -> PipelineResult | None:
+    chat_id = event_source.metadata.get("chat_id") or ""
+    sender_id = event_source.metadata.get("sender_id") or ""
+    if not chat_id or not sender_id:
+        return None
+
+    info = session.lookup(chat_id, sender_id)
+    if info is None:
+        return None
+
+    run_dir = out_dir / info.run_id
+    if not run_dir.exists():
+        session.unregister(chat_id, sender_id)
+        return None
+
+    sender = send_bot_reply if reply_sender is None else reply_sender
+
+    if info.status == "waiting_clarification":
+        clarification_dir = find_waiting_clarification_run(out_dir, event_source)
+        if clarification_dir is not None:
+            reply = parse_clarification_reply(event_source.content)
+            return resume_from_clarification(
+                event_source,
+                clarification_dir,
+                reply,
+                reply_sender=reply_sender,
+                card_reply_sender=None,
+            )
+        return None
+
+    if info.status == "blocked":
+        if is_workspace_resume_reply(event_source.content):
+            blocked_dir = find_blocked_workspace_run(out_dir, event_source)
+            if blocked_dir is not None:
+                return resume_blocked_solution_design(
+                    event_source,
+                    blocked_dir,
+                    reply_sender=reply_sender,
+                    card_reply_sender=None,
+                )
+        return _append_to_active_requirement(
+            event_source,
+            run_dir=run_dir,
+            run_id=info.run_id,
+            reply_sender=reply_sender,
+        )
+
+    if info.status in ("waiting_approval", "waiting_approval_with_warnings"):
+        if sender is not None:
+            try:
+                sender(
+                    event_source.source_id,
+                    f"⚠️ 当前有运行等待审批，请先处理：\nApprove {info.run_id}（同意当前方案）\nReject {info.run_id}（拒绝后可重新描述需求）",
+                    _idempotency_key(info.run_id, "approval-prompt"),
+                )
+            except LarkCliError:
+                pass
+        return PipelineResult(
+            info.run_id,
+            "waiting_approval",
+            run_dir,
+            run_dir / "run.json",
+            None,
+        )
+
+    if info.status == "running":
+        return _append_to_active_requirement(
+            event_source,
+            run_dir=run_dir,
+            run_id=info.run_id,
+            reply_sender=reply_sender,
+        )
+
+    return None
+
+
+def _append_to_active_requirement(
+    event_source: RequirementSource,
+    *,
+    run_dir: Path,
+    run_id: str,
+    reply_sender: ReplySender | None,
+) -> PipelineResult:
+    requirement_path = run_dir / "requirement.json"
+    if requirement_path.exists():
+        try:
+            requirement = json.loads(requirement_path.read_text(encoding="utf-8-sig"))
+            source_summary = requirement.get("source_summary") or {}
+            existing_content = source_summary.get("raw_content") or ""
+            new_content = event_source.content.strip()
+            if new_content:
+                source_summary["raw_content"] = existing_content + "\n" + new_content if existing_content else new_content
+                requirement["source_summary"] = source_summary
+                input_history = requirement.get("input_history") or []
+                input_history.append({
+                    "mode": "supplement",
+                    "text": new_content,
+                    "timestamp": utc_now(),
+                })
+                requirement["input_history"] = input_history
+                requirement_path.write_text(
+                    json.dumps(requirement, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    sender = send_bot_reply if reply_sender is None else reply_sender
+    if sender is not None:
+        try:
+            sender(
+                event_source.source_id,
+                "已追加到当前需求中",
+                _idempotency_key(run_id, "session-append"),
+            )
+        except LarkCliError:
+            pass
+
+    return PipelineResult(
+        run_id,
+        "appended",
+        run_dir,
+        run_dir / "run.json",
+        requirement_path if requirement_path.exists() else None,
+    )
 
 
 STAGE_DISPLAY_NAMES = {
@@ -293,6 +443,7 @@ def process_bot_event(
     reply_sender: ReplySender | None = None,
     prd_creator: PrdCreator | None = None,
     card_reply_sender: CardReplySender | None = None,
+    session: SessionManager | None = None,
 ) -> PipelineResult:
     event_source = event_to_source(event)
     checkpoint_result = maybe_process_checkpoint_event(
@@ -300,6 +451,7 @@ def process_bot_event(
         out_dir=out_dir,
         reply_sender=reply_sender,
         card_reply_sender=card_reply_sender,
+        session=session,
     )
     if checkpoint_result is not None:
         return checkpoint_result
@@ -334,6 +486,11 @@ def process_bot_event(
         payload={"kind": detected.kind, "value": detected.value},
     )
     write_json(run_path, run_payload)
+
+    chat_id = event_source.metadata.get("chat_id") or ""
+    sender_id = event_source.metadata.get("sender_id") or ""
+    if session is not None and chat_id and sender_id:
+        session.register(chat_id, sender_id, run_id, "running")
 
     sender = send_bot_reply if reply_sender is None else reply_sender
     if sender is not None:
@@ -464,6 +621,7 @@ def process_bot_event(
             except LarkCliError:
                 pass
             write_json(run_path, run_payload)
+            _update_session_from_result(session, chat_id, sender_id, run_id, run_payload)
             return PipelineResult(
                 run_id=run_id,
                 status="waiting_clarification",
@@ -538,6 +696,7 @@ def process_bot_event(
         )
         reply_text = build_failure_reply(run_payload)
 
+    _update_session_from_result(session, chat_id, sender_id, run_id, run_payload)
     write_json(run_path, run_payload)
 
     sender = send_bot_reply if reply_sender is None else reply_sender
@@ -1054,6 +1213,7 @@ def maybe_process_checkpoint_event(
     out_dir: Path,
     reply_sender: ReplySender | None,
     card_reply_sender: CardReplySender | None,
+    session: SessionManager | None = None,
 ) -> PipelineResult | None:
     sys_cmd = parse_system_command(event_source.content)
     if sys_cmd is not None:
@@ -1105,45 +1265,66 @@ def maybe_process_checkpoint_event(
                 sender(event_source.source_id, f"未找到运行：{command.run_id}", _idempotency_key(command.run_id, "missing"))
             return PipelineResult(command.run_id, "failed", run_dir, run_dir / "run.json", None)
         if command.decision == "approve":
-            return approve_checkpoint_run(event_source, run_dir, reply_sender=reply_sender, force_override=command.force_override)
-        return reject_checkpoint_run(
+            result = approve_checkpoint_run(event_source, run_dir, reply_sender=reply_sender, force_override=command.force_override)
+            _update_session_from_result(session, event_source.metadata.get("chat_id") or "", event_source.metadata.get("sender_id") or "", command.run_id, {"status": result.status})
+            return result
+        result = reject_checkpoint_run(
             event_source,
             run_dir,
             reason=command.reason,
             reply_sender=reply_sender,
             card_reply_sender=card_reply_sender,
         )
+        _update_session_from_result(session, event_source.metadata.get("chat_id") or "", event_source.metadata.get("sender_id") or "", command.run_id, {"status": result.status})
+        return result
 
     pending_run_dir = find_awaiting_reject_reason_run(out_dir, event_source)
     if pending_run_dir is not None:
-        return reject_checkpoint_run(
+        result = reject_checkpoint_run(
             event_source,
             pending_run_dir,
             reason=event_source.content.strip(),
             reply_sender=reply_sender,
             card_reply_sender=card_reply_sender,
         )
+        _update_session_from_result(session, event_source.metadata.get("chat_id") or "", event_source.metadata.get("sender_id") or "", result.run_id, {"status": result.status})
+        return result
 
     clarification_run_dir = find_waiting_clarification_run(out_dir, event_source)
     if clarification_run_dir is not None:
         reply = parse_clarification_reply(event_source.content)
-        return resume_from_clarification(
+        result = resume_from_clarification(
             event_source,
             clarification_run_dir,
             reply,
             reply_sender=reply_sender,
             card_reply_sender=card_reply_sender,
         )
+        _update_session_from_result(session, event_source.metadata.get("chat_id") or "", event_source.metadata.get("sender_id") or "", result.run_id, {"status": result.status})
+        return result
 
     blocked_run_dir = find_blocked_workspace_run(out_dir, event_source)
-    if blocked_run_dir is None:
-        return None
-    return resume_blocked_solution_design(
-        event_source,
-        blocked_run_dir,
-        reply_sender=reply_sender,
-        card_reply_sender=card_reply_sender,
-    )
+    if blocked_run_dir is not None:
+        result = resume_blocked_solution_design(
+            event_source,
+            blocked_run_dir,
+            reply_sender=reply_sender,
+            card_reply_sender=card_reply_sender,
+        )
+        _update_session_from_result(session, event_source.metadata.get("chat_id") or "", event_source.metadata.get("sender_id") or "", result.run_id, {"status": result.status})
+        return result
+
+    if session is not None:
+        session_result = _route_active_session(
+            event_source,
+            session=session,
+            out_dir=out_dir,
+            reply_sender=reply_sender,
+        )
+        if session_result is not None:
+            return session_result
+
+    return None
 
 
 def resume_blocked_solution_design(
@@ -2283,6 +2464,8 @@ def run_start_loop(
     from devflow.message_buffer import MessageBuffer
     from devflow.message_queue import UserMessageQueue
 
+    session = SessionManager(session_timeout_seconds=config.interaction.session_timeout_seconds)
+
     processed = 0
     raw_events = listen_bot_events(
         max_events=max_events,
@@ -2300,6 +2483,7 @@ def run_start_loop(
             out_dir=out_dir,
             analyzer=analyzer,
             model=model,
+            session=session,
         )
 
     for result in UserMessageQueue(

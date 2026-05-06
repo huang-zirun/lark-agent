@@ -12,7 +12,7 @@ from devflow.code.agent import (
     write_code_diff,
     write_code_generation_artifact,
 )
-from devflow.config import ConfigError, load_config
+from devflow.config import ConfigError, ProjectEntry, load_config
 from devflow.semantic.indexer import SemanticIndexer
 from devflow.llm import LlmError, base_url_host, probe_llm
 from devflow.intake.analyzer import build_requirement_artifact
@@ -263,6 +263,26 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_index.add_argument("--workspace", required=True, help="工作区路径。")
     semantic_index.add_argument("--force-full", action="store_true", help="强制全量重建。")
     semantic_index.set_defaults(handler=handle_semantic_index)
+
+    workspace = subparsers.add_parser("workspace", help="工作区管理命令。")
+    workspace_subparsers = workspace.add_subparsers(dest="workspace_command", required=True)
+
+    workspace_list = workspace_subparsers.add_parser("list", help="列出工作区中的所有项目。")
+    workspace_list.set_defaults(handler=handle_workspace_list)
+
+    workspace_add = workspace_subparsers.add_parser("add", help="添加项目到工作区。")
+    workspace_add.add_argument("--name", required=True, help="项目名称。")
+    workspace_add.add_argument("--path", required=True, help="项目路径。")
+    workspace_add.add_argument("--remote", default="", help="远程仓库 URL。")
+    workspace_add.add_argument("--description", default="", help="项目描述。")
+    workspace_add.set_defaults(handler=handle_workspace_add)
+
+    workspace_resolve = workspace_subparsers.add_parser("resolve", help="解析项目工作区路径。")
+    workspace_resolve.add_argument("name", help="项目名称。")
+    workspace_resolve.set_defaults(handler=handle_workspace_resolve)
+
+    workspace_validate = workspace_subparsers.add_parser("validate", help="验证工作区中所有项目的有效性。")
+    workspace_validate.set_defaults(handler=handle_workspace_validate)
 
     return parser
 
@@ -631,6 +651,97 @@ def handle_semantic_index(args: argparse.Namespace) -> int:
     print(f"  语言分布：{lang_dist}")
     print(f"  耗时：{summary.build_time_ms}ms")
     return 0
+
+
+def _workspace_project_status(entry: ProjectEntry, root: str) -> str:
+    path = Path(entry.path).expanduser()
+    if not path.is_absolute() and root:
+        path = Path(root) / path
+    resolved = path.resolve()
+    if not resolved.exists():
+        return "❌ 路径不存在"
+    if root:
+        try:
+            resolved.relative_to(Path(root).expanduser().resolve())
+        except ValueError:
+            return "❌ 超出 root 边界"
+    return "✅ 有效"
+
+
+def handle_workspace_list(args: argparse.Namespace) -> int:
+    config = load_config()
+    projects = config.workspace.projects
+    if not projects:
+        print("工作区中没有项目。")
+        return 0
+    print(f"{'名称':<20}\t{'路径':<30}\t{'远程':<20}\t{'状态'}")
+    for entry in projects:
+        remote = entry.remote or "-"
+        status = _workspace_project_status(entry, config.workspace.root)
+        print(f"{entry.name:<20}\t{entry.path:<30}\t{remote:<20}\t{status}")
+    return 0
+
+
+def handle_workspace_add(args: argparse.Namespace) -> int:
+    config = load_config()
+    for entry in config.workspace.projects:
+        if entry.name == args.name:
+            print(f"项目名称「{args.name}」已存在。", file=sys.stderr)
+            return 2
+    config_path = Path("config.json")
+    if not config_path.exists():
+        print("未找到配置文件：config.json", file=sys.stderr)
+        return 2
+    payload = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    workspace_payload = payload.setdefault("workspace", {})
+    projects_payload = workspace_payload.setdefault("projects", [])
+    projects_payload.append({
+        "name": args.name,
+        "path": args.path,
+        "remote": args.remote,
+        "description": args.description,
+    })
+    config_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"已添加项目「{args.name}」→ {args.path}")
+    return 0
+
+
+def handle_workspace_resolve(args: argparse.Namespace) -> int:
+    config = load_config()
+    entry = None
+    for p in config.workspace.projects:
+        if p.name == args.name:
+            entry = p
+            break
+    if entry is None:
+        print(f"未找到项目「{args.name}」。", file=sys.stderr)
+        return 2
+    resolved = resolve_workspace(repo_path=entry.path, config=config.workspace)
+    print(f"路径：{resolved['path']}")
+    print(f"名称：{resolved['project_name']}")
+    print(f"来源：{resolved['source']}")
+    print(f"可写：{'是' if resolved['writable'] else '否'}")
+    return 0
+
+
+def handle_workspace_validate(args: argparse.Namespace) -> int:
+    config = load_config()
+    projects = config.workspace.projects
+    if not projects:
+        print("工作区中没有项目。")
+        return 0
+    ok_count = 0
+    fail_count = 0
+    for entry in projects:
+        try:
+            resolve_workspace(repo_path=entry.path, config=config.workspace)
+            print(f"✅ {entry.name}")
+            ok_count += 1
+        except WorkspaceError as exc:
+            print(f"❌ {entry.name}：{exc}")
+            fail_count += 1
+    print(f"\n验证完成：{ok_count} 个有效，{fail_count} 个无效。")
+    return 0 if fail_count == 0 else 2
 
 
 def _build_artifact(source, args: argparse.Namespace) -> dict:
