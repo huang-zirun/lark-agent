@@ -110,6 +110,16 @@ def _update_session_from_result(
         session.update_status(chat_id, sender_id, status)
 
 
+def _current_running_stage(stages: list[dict[str, Any]]) -> str | None:
+    for stage in stages:
+        if stage.get("status") == "running":
+            return stage.get("name")
+    for stage in stages:
+        if stage.get("status") == "pending":
+            return stage.get("name")
+    return None
+
+
 def _route_active_session(
     event_source: RequirementSource,
     *,
@@ -134,7 +144,7 @@ def _route_active_session(
     sender = send_bot_reply if reply_sender is None else reply_sender
 
     if info.status == "waiting_clarification":
-        clarification_dir = find_waiting_clarification_run(out_dir, event_source)
+        clarification_dir = find_waiting_clarification_run(out_dir, event_source, session=session)
         if clarification_dir is not None:
             reply = parse_clarification_reply(event_source.content)
             return resume_from_clarification(
@@ -148,7 +158,7 @@ def _route_active_session(
 
     if info.status == "blocked":
         if is_workspace_resume_reply(event_source.content):
-            blocked_dir = find_blocked_workspace_run(out_dir, event_source)
+            blocked_dir = find_blocked_workspace_run(out_dir, event_source, session=session)
             if blocked_dir is not None:
                 return resume_blocked_solution_design(
                     event_source,
@@ -182,11 +192,39 @@ def _route_active_session(
         )
 
     if info.status == "running":
-        return _append_to_active_requirement(
-            event_source,
-            run_dir=run_dir,
-            run_id=info.run_id,
-            reply_sender=reply_sender,
+        run_json_path = run_dir / "run.json"
+        should_append = True
+        if run_json_path.exists():
+            try:
+                run_data = json.loads(run_json_path.read_text(encoding="utf-8-sig"))
+                stages = run_data.get("stages") or []
+                current_stage = _current_running_stage(stages)
+                if current_stage is not None and current_stage != "requirement_intake":
+                    should_append = False
+            except (OSError, json.JSONDecodeError):
+                pass
+        if should_append:
+            return _append_to_active_requirement(
+                event_source,
+                run_dir=run_dir,
+                run_id=info.run_id,
+                reply_sender=reply_sender,
+            )
+        if sender is not None:
+            try:
+                sender(
+                    event_source.source_id,
+                    f"📋 当前有运行正在处理中，你的消息将在完成后处理。\n运行 ID：{info.run_id}",
+                    _idempotency_key(info.run_id, "queue-prompt"),
+                )
+            except LarkCliError:
+                pass
+        return PipelineResult(
+            info.run_id,
+            "queued",
+            run_dir,
+            run_dir / "run.json",
+            None,
         )
 
     return None
@@ -1278,7 +1316,7 @@ def maybe_process_checkpoint_event(
         _update_session_from_result(session, event_source.metadata.get("chat_id") or "", event_source.metadata.get("sender_id") or "", command.run_id, {"status": result.status})
         return result
 
-    pending_run_dir = find_awaiting_reject_reason_run(out_dir, event_source)
+    pending_run_dir = find_awaiting_reject_reason_run(out_dir, event_source, session=session)
     if pending_run_dir is not None:
         result = reject_checkpoint_run(
             event_source,
@@ -1290,7 +1328,7 @@ def maybe_process_checkpoint_event(
         _update_session_from_result(session, event_source.metadata.get("chat_id") or "", event_source.metadata.get("sender_id") or "", result.run_id, {"status": result.status})
         return result
 
-    clarification_run_dir = find_waiting_clarification_run(out_dir, event_source)
+    clarification_run_dir = find_waiting_clarification_run(out_dir, event_source, session=session)
     if clarification_run_dir is not None:
         reply = parse_clarification_reply(event_source.content)
         result = resume_from_clarification(
@@ -1303,7 +1341,7 @@ def maybe_process_checkpoint_event(
         _update_session_from_result(session, event_source.metadata.get("chat_id") or "", event_source.metadata.get("sender_id") or "", result.run_id, {"status": result.status})
         return result
 
-    blocked_run_dir = find_blocked_workspace_run(out_dir, event_source)
+    blocked_run_dir = find_blocked_workspace_run(out_dir, event_source, session=session)
     if blocked_run_dir is not None:
         result = resume_blocked_solution_design(
             event_source,
@@ -2592,11 +2630,17 @@ def reviewer_from_event(event_source: RequirementSource) -> dict[str, Any]:
     }
 
 
-def find_awaiting_reject_reason_run(out_dir: Path, event_source: RequirementSource) -> Path | None:
-    if not out_dir.exists():
-        return None
+def find_awaiting_reject_reason_run(out_dir: Path, event_source: RequirementSource, *, session: SessionManager | None = None) -> Path | None:
     chat_id = event_source.metadata.get("chat_id")
     sender_id = event_source.metadata.get("sender_id")
+    if session is not None and chat_id and sender_id:
+        info = session.lookup(chat_id, sender_id)
+        if info is not None and info.status == "awaiting_reject_reason":
+            run_dir = out_dir / info.run_id
+            if run_dir.exists():
+                return run_dir
+    if not out_dir.exists():
+        return None
     for checkpoint_path in sorted(out_dir.glob("*/checkpoint.json")):
         try:
             checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8-sig"))
@@ -2610,11 +2654,17 @@ def find_awaiting_reject_reason_run(out_dir: Path, event_source: RequirementSour
     return None
 
 
-def find_waiting_clarification_run(out_dir: Path, event_source: RequirementSource) -> Path | None:
-    if not out_dir.exists():
-        return None
+def find_waiting_clarification_run(out_dir: Path, event_source: RequirementSource, *, session: SessionManager | None = None) -> Path | None:
     chat_id = event_source.metadata.get("chat_id")
     sender_id = event_source.metadata.get("sender_id")
+    if session is not None and chat_id and sender_id:
+        info = session.lookup(chat_id, sender_id)
+        if info is not None and info.status == "waiting_clarification":
+            run_dir = out_dir / info.run_id
+            if run_dir.exists():
+                return run_dir
+    if not out_dir.exists():
+        return None
     candidates: list[Path] = []
     for checkpoint_path in sorted(out_dir.glob("*/checkpoint.json")):
         try:
@@ -2746,11 +2796,17 @@ def resume_from_clarification(
     )
 
 
-def find_blocked_workspace_run(out_dir: Path, event_source: RequirementSource) -> Path | None:
+def find_blocked_workspace_run(out_dir: Path, event_source: RequirementSource, *, session: SessionManager | None = None) -> Path | None:
     if not is_workspace_resume_reply(event_source.content):
         return None
     chat_id = event_source.metadata.get("chat_id")
     sender_id = event_source.metadata.get("sender_id")
+    if session is not None and chat_id and sender_id:
+        info = session.lookup(chat_id, sender_id)
+        if info is not None and info.status == "blocked":
+            run_dir = out_dir / info.run_id
+            if run_dir.exists():
+                return run_dir
     candidates: list[Path] = []
     for checkpoint_path in sorted(out_dir.glob("*/checkpoint.json")):
         try:
