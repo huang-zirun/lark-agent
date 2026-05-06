@@ -18,7 +18,15 @@
   },
   "workspace": {
     "root": "",
-    "default_repo": ""
+    "default_repo": "",
+    "projects": [
+      {
+        "name": "my-project",
+        "path": "workspaces/my-project",
+        "remote": "https://github.com/org/repo.git",
+        "description": "项目描述"
+      }
+    ]
   },
   "approval": {
     "enabled": false,

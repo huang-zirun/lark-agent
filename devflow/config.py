@@ -36,9 +36,18 @@ class LarkConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectEntry:
+    name: str
+    path: str
+    remote: str = ""
+    description: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class WorkspaceConfig:
     root: str = ""
     default_repo: str = ""
+    projects: tuple[ProjectEntry, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +71,7 @@ class InteractionConfig:
     default_chat_id: str = ""
     max_queue_size: int = 5
     message_merge_window_seconds: int = 5
+    session_timeout_seconds: int = 1800
     progress_notifications_enabled: bool = True
 
 
@@ -142,6 +152,7 @@ def load_config(
     workspace = WorkspaceConfig(
         root=_string(workspace_section.get("root")) or "",
         default_repo=_string(workspace_section.get("default_repo")) or "",
+        projects=_parse_projects(workspace_section.get("projects")),
     )
     approval = ApprovalConfig(
         enabled=_bool(approval_section.get("enabled"), False),
@@ -159,6 +170,7 @@ def load_config(
         default_chat_id=_string(interaction_section.get("default_chat_id")) or "",
         max_queue_size=_int(interaction_section.get("max_queue_size"), 5),
         message_merge_window_seconds=_int(interaction_section.get("message_merge_window_seconds"), 5),
+        session_timeout_seconds=_int(interaction_section.get("session_timeout_seconds"), 1800),
         progress_notifications_enabled=_bool(interaction_section.get("progress_notifications_enabled"), True),
     )
     reference = ReferenceConfig(
@@ -245,3 +257,31 @@ def _bool(value: Any, default: bool) -> bool:
         if lowered in {"false", "0", "no", "off"}:
             return False
     raise ConfigError("配置项必须是布尔值：llm.response_format_json。")
+
+
+def _parse_projects(value: Any) -> tuple[ProjectEntry, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ConfigError("配置项必须是数组：workspace.projects。")
+    entries: list[ProjectEntry] = []
+    seen_names: set[str] = set()
+    for idx, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ConfigError(f"workspace.projects[{idx}] 必须是 object。")
+        name = _string(item.get("name"))
+        if not name:
+            raise ConfigError(f"workspace.projects[{idx}] 缺少必填字段：name。")
+        if name in seen_names:
+            raise ConfigError(f"workspace.projects[{idx}] 名称重复：{name}。")
+        seen_names.add(name)
+        path = _string(item.get("path"))
+        if not path:
+            raise ConfigError(f"workspace.projects[{idx}] 缺少必填字段：path。")
+        entries.append(ProjectEntry(
+            name=name,
+            path=path,
+            remote=_string(item.get("remote")) or "",
+            description=_string(item.get("description")) or "",
+        ))
+    return tuple(entries)
