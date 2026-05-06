@@ -1,6 +1,6 @@
 # DevFlow Engine Design Snapshot
 
-Last updated: 2026-05-06 (Dashboard stage detail enhancement: LLM info display, Markdown artifact rendering, stage-filtered LLM panel, faster polling)
+Last updated: 2026-05-06 (Workspace directory reliability: project config, CLI management, source tracing)
 
 ## Working Rules
 
@@ -78,6 +78,9 @@ The current deliverable is a Python CLI and REST minimal DevFlow runtime. It inc
 - Solution design is LLM-only. `devflow design from-requirement` accepts `--repo` for an existing local folder or `--new-project` for a new folder under `workspace.root`.
 - `devflow start` runs `solution_design` after successful LLM requirement intake when a workspace can be resolved from `仓库：...`, `新建项目：...`, or `workspace.default_repo`; otherwise the stage becomes `blocked`, writes `checkpoint.json`, and puts the exact blocked reason plus copyable one-line recovery formats (`仓库：D:\path\to\repo` or `新项目：snake-game`) in the first line of the bot reply because Feishu reply previews may hide later lines.
 - Workspace resolution v1 supports only local existing paths and new local projects. Git URLs and uploaded archives are deferred.
+- Workspace resolution now supports a **project config** layer via `workspace.projects` in `config.json`. Each `ProjectEntry` declares `name` (unique identifier), `path` (local path, absolute or relative to `workspace.root`), optional `remote` (Git URL, v1 recorded but not cloned), and optional `description`. The `resolve_workspace()` priority chain is: CLI explicit argument → project name match (`workspace.projects`) → message directive parsing → `workspace.default_repo`. When a user sends `仓库：api-server` and a project named `api-server` exists in config, the system resolves to the configured path instead of treating `api-server` as a filesystem path. This follows the industry pattern of "config-driven (deterministic) + conversation directive (flexible) hybrid mode" observed in Claude Code (`/add-dir` + `CLAUDE.md`), Cursor (IDE workspace + `@folder`), and Aider (`/add` + `.aider.conf.yml`).
+- `resolve_workspace()` now returns a `source` field in its payload with values `cli_argument`, `project_config`, `message_directive`, or `default_repo` for audit and debugging traceability.
+- `devflow workspace` CLI subcommand group provides `list` (show all projects with path validity), `add` (append project to config.json with name uniqueness check), `resolve` (resolve by name and output absolute path), and `validate` (check all project paths for existence and root boundary).
 - When `workspace.root` is configured, explicit repo paths and `workspace.default_repo` must both resolve inside that root; otherwise solution design blocks with the exact root-boundary reason.
 - New project setup creates the directory under `workspace.root` and initializes Git; solution design itself remains read-only with respect to business code.
 - Solution-stage audit files are written as `solution-llm-request.json` and `solution-llm-response.json`.
