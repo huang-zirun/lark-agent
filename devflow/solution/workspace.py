@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from devflow.config import ReferenceConfig, SemanticConfig, WorkspaceConfig
+from devflow.config import ProjectEntry, ReferenceConfig, SemanticConfig, WorkspaceConfig
 
 
 EXCLUDED_DIRECTORIES = [
@@ -70,21 +70,31 @@ def resolve_workspace(
     config: WorkspaceConfig | None = None,
 ) -> dict[str, Any]:
     workspace_config = config or WorkspaceConfig()
+    source = "cli_argument"
+
     if message_text and not repo_path and not new_project:
         directive = parse_workspace_directive(message_text)
         if directive is not None and directive.mode == "existing_path":
             repo_path = directive.value
+            source = "message_directive"
         elif directive is not None and directive.mode == "new_project":
             new_project = directive.value
+            source = "message_directive"
+
+    if repo_path and source == "message_directive":
+        project_entry = _find_project_by_name(repo_path, workspace_config.projects)
+        if project_entry is not None:
+            return _resolve_project_entry(project_entry, workspace_config)
 
     if not repo_path and not new_project and workspace_config.default_repo:
         repo_path = workspace_config.default_repo
+        source = "default_repo"
 
     if new_project:
-        return _resolve_new_project(new_project, workspace_config)
+        return _resolve_new_project(new_project, workspace_config, source=source)
     if repo_path:
-        return _resolve_existing_path(repo_path, workspace_config)
-    raise WorkspaceError("缺少仓库上下文：请提供 --repo、--new-project、机器人消息中的“仓库：...”或 workspace.default_repo。")
+        return _resolve_existing_path(repo_path, workspace_config, source=source)
+    raise WorkspaceError('缺少仓库上下文：请提供 --repo、--new-project、机器人消息中的"仓库：..."或 workspace.default_repo。')
 
 
 def build_codebase_context(
@@ -188,7 +198,7 @@ def build_codebase_context(
     }
 
 
-def _resolve_new_project(project_name: str, config: WorkspaceConfig) -> dict[str, Any]:
+def _resolve_new_project(project_name: str, config: WorkspaceConfig, *, source: str = "cli_argument") -> dict[str, Any]:
     cleaned = _safe_project_name(project_name)
     if not config.root:
         raise WorkspaceError("新建项目需要先配置 workspace.root。")
@@ -197,10 +207,10 @@ def _resolve_new_project(project_name: str, config: WorkspaceConfig) -> dict[str
     _ensure_inside_root(project_path, root)
     project_path.mkdir(parents=True, exist_ok=True)
     _init_git(project_path)
-    return _workspace_payload("new_project", project_path, project_name=cleaned, writable=True)
+    return _workspace_payload("new_project", project_path, project_name=cleaned, writable=True, source=source)
 
 
-def _resolve_existing_path(repo_path: str, config: WorkspaceConfig) -> dict[str, Any]:
+def _resolve_existing_path(repo_path: str, config: WorkspaceConfig, *, source: str = "cli_argument") -> dict[str, Any]:
     path = Path(repo_path).expanduser()
     if not path.is_absolute() and config.root:
         path = Path(config.root) / path
@@ -209,7 +219,30 @@ def _resolve_existing_path(repo_path: str, config: WorkspaceConfig) -> dict[str,
         raise WorkspaceError(f"仓库路径不存在或不是文件夹：{resolved}。")
     if config.root:
         _ensure_inside_root(resolved, Path(config.root).expanduser().resolve())
-    return _workspace_payload("existing_path", resolved, project_name=resolved.name, writable=True)
+    return _workspace_payload("existing_path", resolved, project_name=resolved.name, writable=True, source=source)
+
+
+def _resolve_project_entry(entry: ProjectEntry, config: WorkspaceConfig) -> dict[str, Any]:
+    path = Path(entry.path).expanduser()
+    if not path.is_absolute() and config.root:
+        path = Path(config.root) / path
+    resolved = path.resolve()
+    if not resolved.exists() or not resolved.is_dir():
+        raise WorkspaceError(f"项目「{entry.name}」路径不存在或不是文件夹：{resolved}。")
+    if config.root:
+        _ensure_inside_root(resolved, Path(config.root).expanduser().resolve())
+    return _workspace_payload(
+        "existing_path", resolved,
+        project_name=entry.name, writable=True,
+        source="project_config", remote=entry.remote,
+    )
+
+
+def _find_project_by_name(name: str, projects: tuple[ProjectEntry, ...]) -> ProjectEntry | None:
+    for entry in projects:
+        if entry.name == name:
+            return entry
+    return None
 
 
 def _workspace_payload(
@@ -218,14 +251,17 @@ def _workspace_payload(
     *,
     project_name: str,
     writable: bool,
+    source: str = "cli_argument",
+    remote: str = "",
 ) -> dict[str, Any]:
     return {
         "mode": mode,
         "path": str(path),
         "project_name": project_name,
-        "repo_url": "",
+        "repo_url": remote,
         "base_branch": "main",
         "writable": writable,
+        "source": source,
     }
 
 
