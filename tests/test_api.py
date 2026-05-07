@@ -173,7 +173,7 @@ class TestPipelineLifecycle:
         srv, port = server
         created, _ = _post(port, "/api/v1/pipelines", {
             "requirement_text": "测试需求",
-            "analyzer": "heuristic",
+            
         })
         run_id = created["run_id"]
 

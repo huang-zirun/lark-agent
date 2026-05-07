@@ -279,7 +279,7 @@ class ProcessBotEventClarificationTests(unittest.TestCase):
         ]
         artifact = make_requirement_artifact(ready=False, open_questions=open_questions)
 
-        def build_artifact(_source, _analyzer, _model):
+        def build_artifact(_source):
             return artifact
 
         replies: list[str] = []
@@ -303,8 +303,6 @@ class ProcessBotEventClarificationTests(unittest.TestCase):
         result = process_bot_event(
             event,
             out_dir=out_dir,
-            analyzer="heuristic",
-            model="heuristic-local-v1",
             build_artifact=build_artifact,
             reply_sender=reply_sender,
             card_reply_sender=card_sender,
@@ -317,7 +315,7 @@ class ProcessBotEventClarificationTests(unittest.TestCase):
         out_dir = temp_out_dir()
         artifact = make_requirement_artifact(ready=True, open_questions=[])
 
-        def build_artifact(_source, _analyzer, _model):
+        def build_artifact(_source):
             return artifact
 
         cards: list[dict] = []
@@ -337,8 +335,6 @@ class ProcessBotEventClarificationTests(unittest.TestCase):
         result = process_bot_event(
             event,
             out_dir=out_dir,
-            analyzer="heuristic",
-            model="heuristic-local-v1",
             build_artifact=build_artifact,
             card_reply_sender=card_sender,
         )
@@ -352,7 +348,7 @@ class ProcessBotEventClarificationTests(unittest.TestCase):
         ]
         artifact = make_requirement_artifact(ready=True, open_questions=open_questions)
 
-        def build_artifact(_source, _analyzer, _model):
+        def build_artifact(_source):
             return artifact
 
         cards: list[dict] = []
@@ -372,8 +368,6 @@ class ProcessBotEventClarificationTests(unittest.TestCase):
         result = process_bot_event(
             event,
             out_dir=out_dir,
-            analyzer="heuristic",
-            model="heuristic-local-v1",
             build_artifact=build_artifact,
             card_reply_sender=card_sender,
         )

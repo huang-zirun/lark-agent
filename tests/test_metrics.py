@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import json
-import tempfile
+import shutil
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from uuid import uuid4
 
 from devflow.metrics import get_run_artifact_markdown, get_run_detail, get_run_llm_trace
+
+
+@contextmanager
+def temp_run_dir():
+    path = Path.cwd() / ".test-tmp" / f"metrics-{uuid4().hex}"
+    path.mkdir(parents=True, exist_ok=False)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -22,8 +34,8 @@ def request_payload(model: str, system: str, user: str) -> dict:
     }
 
 
-def response_payload(content: str, total_tokens: int) -> dict:
-    return {
+def response_payload(content: str, total_tokens: int, provider: str | None = None) -> dict:
+    payload = {
         "started_at": "2026-05-06T00:00:00Z",
         "ended_at": "2026-05-06T00:00:01Z",
         "duration_ms": 1000,
@@ -35,12 +47,14 @@ def response_payload(content: str, total_tokens: int) -> dict:
         },
         "usage_source": "provider",
     }
+    if provider is not None:
+        payload["provider"] = provider
+    return payload
 
 
 class MetricsTraceTests(unittest.TestCase):
     def test_llm_trace_normalizes_intake_and_multi_turn_records(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            run_dir = Path(temp)
+        with temp_run_dir() as run_dir:
             write_json(run_dir / "llm-request.json", request_payload("intake-model", "intake system", "intake user"))
             write_json(run_dir / "llm-response.json", response_payload("intake output", 10))
             write_json(run_dir / "code-llm-request-turn1.json", request_payload("code-model", "code system", "code user 1"))
@@ -61,9 +75,37 @@ class MetricsTraceTests(unittest.TestCase):
         self.assertIsNone(trace[2]["request_path"])
         self.assertEqual(trace[2]["content"], "code output 2")
 
+    def test_llm_trace_provider_uses_real_provider_not_usage_source(self) -> None:
+        with temp_run_dir() as run_dir:
+            write_json(run_dir / "llm-request.json", request_payload("intake-model", "s", "u"))
+            write_json(run_dir / "llm-response.json", response_payload("intake", 10, provider="mimo"))
+
+            trace = get_run_llm_trace(run_dir)
+
+        self.assertEqual(trace[0]["provider"], "mimo")
+        self.assertEqual(trace[0]["usage_source"], "provider")
+
+    def test_run_detail_provider_falls_back_to_stage_artifact_metadata(self) -> None:
+        with temp_run_dir() as run_dir:
+            write_json(
+                run_dir / "run.json",
+                {
+                    "run_id": "run_legacy_provider",
+                    "stages": [{"name": "solution_design", "status": "success"}],
+                    "solution_artifact": str(run_dir / "solution.json"),
+                },
+            )
+            write_json(run_dir / "solution.json", {"metadata": {"llm_provider": "ark"}})
+            write_json(run_dir / "solution-llm-request.json", request_payload("solution-model", "s", "u"))
+            write_json(run_dir / "solution-llm-response.json", response_payload("solution", 20))
+
+            detail = get_run_detail(run_dir)
+
+        self.assertEqual(detail["llm_calls"][0]["provider"], "ark")
+        self.assertEqual(detail["token_summary"]["solution_design"]["provider"], "ark")
+
     def test_run_detail_token_summary_uses_normalized_trace(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            run_dir = Path(temp)
+        with temp_run_dir() as run_dir:
             write_json(
                 run_dir / "run.json",
                 {
@@ -99,8 +141,7 @@ class MetricsTraceTests(unittest.TestCase):
         self.assertEqual(summary["code_review"]["model"], "review-model")
 
     def test_artifact_markdown_supports_all_stages_and_run_json_path_priority(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            run_dir = Path(temp)
+        with temp_run_dir() as run_dir:
             custom_requirement = run_dir / "custom-requirement.md"
             custom_requirement.write_text("# Custom requirement\n", encoding="utf-8")
             (run_dir / "requirement.md").write_text("# Fallback requirement\n", encoding="utf-8")
@@ -119,8 +160,7 @@ class MetricsTraceTests(unittest.TestCase):
             self.assertEqual(get_run_artifact_markdown(run_dir, "delivery"), "# Delivery\n")
 
     def test_missing_artifact_markdown_returns_none(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            run_dir = Path(temp)
+        with temp_run_dir() as run_dir:
             write_json(run_dir / "run.json", {"run_id": "run_missing"})
 
             self.assertIsNone(get_run_artifact_markdown(run_dir, "code_generation"))

@@ -179,17 +179,16 @@ class CliConfigFallbackTests(unittest.TestCase):
             out_path = Path(temp_dir) / "requirement.json"
             with patch("devflow.cli.load_config", return_value=fake_config):
                 with patch("devflow.cli.fetch_doc_source", return_value=fake_source) as fetch:
-                    with redirect_stdout(StringIO()):
-                        exit_code = main(
-                            [
-                                "intake",
-                                "from-doc",
-                                "--analyzer",
-                                "heuristic",
-                                "--out",
-                                str(out_path),
-                            ]
-                        )
+                    with patch("devflow.cli.build_requirement_artifact", return_value={}) as build:
+                        with redirect_stdout(StringIO()):
+                            exit_code = main(
+                                    [
+                                        "intake",
+                                        "from-doc",
+                                        "--out",
+                                        str(out_path),
+                                    ]
+                            )
 
         self.assertEqual(exit_code, 0)
         fetch.assert_called_once_with("doc_from_config")

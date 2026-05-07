@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, parse_qs
@@ -76,8 +76,7 @@ OPENAPI_SPEC: dict[str, Any] = {
                                 "required": ["requirement_text"],
                                 "properties": {
                                     "requirement_text": {"type": "string", "description": "需求文本"},
-                                    "analyzer": {"type": "string", "enum": ["llm", "heuristic"], "default": "llm"},
-                                    "model": {"type": "string", "default": "heuristic-local-v1"},
+                                    "model": {"type": "string", "description": "LLM 模型名称"},
                                     "provider": {"type": "string", "description": "LLM Provider 覆盖"},
                                     "stages": {
                                         "type": "array",
@@ -361,33 +360,42 @@ REDOC_HTML = """<!DOCTYPE html>
 </html>"""
 
 
-_ROUTE_PATTERNS: list[tuple[str, str]] = [
-    ("GET", r"^/api/v1/pipelines$"),
-    ("POST", r"^/api/v1/pipelines$"),
-    ("GET", r"^/api/v1/pipelines/([^/]+)$"),
-    ("DELETE", r"^/api/v1/pipelines/([^/]+)$"),
-    ("POST", r"^/api/v1/pipelines/([^/]+)/trigger$"),
-    ("POST", r"^/api/v1/pipelines/([^/]+)/pause$"),
-    ("POST", r"^/api/v1/pipelines/([^/]+)/resume$"),
-    ("GET", r"^/api/v1/pipelines/([^/]+)/checkpoint$"),
-    ("POST", r"^/api/v1/pipelines/([^/]+)/checkpoint$"),
-    ("GET", r"^/api/v1/metrics/overview$"),
-    ("GET", r"^/api/v1/metrics/stage-stats$"),
-    ("GET", r"^/api/v1/metrics/token-usage$"),
-    ("GET", r"^/api/v1/metrics/recent-runs$"),
-    ("GET", r"^/api/v1/metrics/runs/([^/]+)/timeline$"),
-    ("GET", r"^/api/v1/metrics/active-run$"),
-    ("GET", r"^/api/v1/metrics/runs/([^/]+)/detail$"),
-    ("GET", r"^/api/v1/metrics/runs/([^/]+)/llm-trace$"),
-    ("GET", r"^/api/v1/metrics/runs/([^/]+)/artifacts$"),
-    ("GET", r"^/api/v1/metrics/runs/([^/]+)/diff$"),
-    ("GET", r"^/api/v1/metrics/runs/([^/]+)/artifact-markdown$"),
-    ("GET", r"^/dashboard$"),
-    ("GET", r"^/dashboard/assets/(.+)$"),
-    ("GET", r"^/api/v1/openapi\.json$"),
-    ("GET", r"^/docs$"),
-    ("GET", r"^/redoc$"),
+# Route table: (method, pattern, handler_name, group_keys).
+# handler_name is a method name on DevFlowHandler; group_keys lists
+# the names of captured groups passed as positional args.
+# Adding a route only requires one entry here — no separate dispatch logic.
+_ROUTE_TABLE: list[tuple[str, str, str, list[str]]] = [
+    ("GET",  r"^/api/v1/pipelines$",                              "_handle_list_pipelines",       []),
+    ("POST", r"^/api/v1/pipelines$",                              "_handle_create_pipeline",      []),
+    ("GET",  r"^/api/v1/pipelines/([^/]+)$",                     "_handle_get_pipeline",         ["run_id"]),
+    ("DELETE",r"^/api/v1/pipelines/([^/]+)$",                    "_handle_terminate_pipeline",   ["run_id"]),
+    ("POST", r"^/api/v1/pipelines/([^/]+)/trigger$",            "_handle_trigger_pipeline",     ["run_id"]),
+    ("POST", r"^/api/v1/pipelines/([^/]+)/pause$",              "_handle_pause_pipeline",       ["run_id"]),
+    ("POST", r"^/api/v1/pipelines/([^/]+)/resume$",             "_handle_resume_pipeline",      ["run_id"]),
+    ("GET",  r"^/api/v1/pipelines/([^/]+)/checkpoint$",         "_handle_get_checkpoint",       ["run_id"]),
+    ("POST", r"^/api/v1/pipelines/([^/]+)/checkpoint$",         "_handle_decide_checkpoint",    ["run_id"]),
+    ("GET",  r"^/api/v1/metrics/overview$",                      "_handle_metrics_overview",     []),
+    ("GET",  r"^/api/v1/metrics/stage-stats$",                   "_handle_metrics_stage_stats",  []),
+    ("GET",  r"^/api/v1/metrics/token-usage$",                   "_handle_metrics_token_usage",  []),
+    ("GET",  r"^/api/v1/metrics/recent-runs$",                   "_handle_metrics_recent_runs",  []),
+    ("GET",  r"^/api/v1/metrics/runs/([^/]+)/timeline$",        "_handle_metrics_run_timeline", ["run_id"]),
+    ("GET",  r"^/api/v1/metrics/active-run$",                    "_handle_metrics_active_run",   []),
+    ("GET",  r"^/api/v1/metrics/runs/([^/]+)/detail$",          "_handle_metrics_run_detail",   ["run_id"]),
+    ("GET",  r"^/api/v1/metrics/runs/([^/]+)/llm-trace$",       "_handle_metrics_run_llm_trace",["run_id"]),
+    ("GET",  r"^/api/v1/metrics/runs/([^/]+)/artifacts$",       "_handle_metrics_run_artifacts",["run_id"]),
+    ("GET",  r"^/api/v1/metrics/runs/([^/]+)/diff$",            "_handle_metrics_run_diff",     ["run_id"]),
+    ("GET",  r"^/api/v1/metrics/runs/([^/]+)/artifact-markdown$","_handle_metrics_run_artifact_markdown", ["run_id"]),
+    ("GET",  r"^/dashboard$",                                     "_handle_dashboard",            []),
+    ("GET",  r"^/dashboard/assets/(.+)$",                         "_handle_dashboard_assets",     ["filepath"]),
+    ("GET",  r"^/dashboard/([\w.-]+)$",                           "_handle_dashboard_static",     ["filename"]),
+    ("GET",  r"^/api/v1/openapi\.json$",                         "_handle_openapi_json",         []),
+    ("GET",  r"^/$",                                              "_handle_root",                 []),
+    ("GET",  r"^/docs$",                                          "_handle_docs",                 []),
+    ("GET",  r"^/redoc$",                                         "_handle_redoc",                []),
 ]
+
+# Keep _ROUTE_PATTERNS for backward-compatible test imports
+_ROUTE_PATTERNS: list[tuple[str, str]] = [(m, p) for m, p, _, _ in _ROUTE_TABLE]
 
 
 class DevFlowApiHandler(BaseHTTPRequestHandler):
@@ -416,15 +424,16 @@ class DevFlowApiHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         return json.loads(raw.decode("utf-8"))
 
-    def _resolve_route(self, method: str) -> tuple[str, list[str]] | None:
+    def _resolve_route(self, method: str) -> tuple[str, str, list[str], list[str]] | None:
+        """Return (handler_name, pattern, groups, group_keys) or None."""
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
-        for pattern_method, pattern in _ROUTE_PATTERNS:
-            if method != pattern_method:
+        for route_method, pattern, handler_name, group_keys in _ROUTE_TABLE:
+            if method != route_method:
                 continue
             m = re.match(pattern, path)
             if m is not None:
-                return pattern, list(m.groups())
+                return handler_name, pattern, list(m.groups()), group_keys
         return None
 
     def do_GET(self):
@@ -441,91 +450,25 @@ class DevFlowApiHandler(BaseHTTPRequestHandler):
         if result is None:
             self._json_response(404, {"error": "未找到路由"})
             return
-        pattern, groups = result
+        handler_name, pattern, groups, group_keys = result
+        handler = getattr(self, handler_name)
+        handler(*groups)
 
-        if pattern == r"^/api/v1/openapi\.json$":
-            self._json_response(200, OPENAPI_SPEC)
-            return
+    # --- Route handlers ---
 
-        if pattern == r"^/api/v1/pipelines$" and method == "GET":
-            self._handle_list_pipelines()
-            return
-        if pattern == r"^/api/v1/pipelines$" and method == "POST":
-            self._handle_create_pipeline()
-            return
+    def _handle_root(self) -> None:
+        self.send_response(302)
+        self.send_header("Location", "/dashboard")
+        self.end_headers()
 
-        run_id = groups[0] if groups else ""
+    def _handle_openapi_json(self) -> None:
+        self._json_response(200, OPENAPI_SPEC)
 
-        if pattern == r"^/api/v1/pipelines/([^/]+)$" and method == "GET":
-            self._handle_get_pipeline(run_id)
-            return
-        if pattern == r"^/api/v1/pipelines/([^/]+)$" and method == "DELETE":
-            self._handle_terminate_pipeline(run_id)
-            return
-        if pattern == r"^/api/v1/pipelines/([^/]+)/trigger$" and method == "POST":
-            self._handle_trigger_pipeline(run_id)
-            return
-        if pattern == r"^/api/v1/pipelines/([^/]+)/pause$" and method == "POST":
-            self._handle_pause_pipeline(run_id)
-            return
-        if pattern == r"^/api/v1/pipelines/([^/]+)/resume$" and method == "POST":
-            self._handle_resume_pipeline(run_id)
-            return
-        if pattern == r"^/api/v1/pipelines/([^/]+)/checkpoint$" and method == "GET":
-            self._handle_get_checkpoint(run_id)
-            return
-        if pattern == r"^/api/v1/pipelines/([^/]+)/checkpoint$" and method == "POST":
-            self._handle_decide_checkpoint(run_id)
-            return
+    def _handle_docs(self) -> None:
+        self._html_response(SWAGGER_UI_HTML)
 
-        if pattern == r"^/api/v1/metrics/overview$" and method == "GET":
-            self._handle_metrics_overview()
-            return
-        if pattern == r"^/api/v1/metrics/stage-stats$" and method == "GET":
-            self._handle_metrics_stage_stats()
-            return
-        if pattern == r"^/api/v1/metrics/token-usage$" and method == "GET":
-            self._handle_metrics_token_usage()
-            return
-        if pattern == r"^/api/v1/metrics/recent-runs$" and method == "GET":
-            self._handle_metrics_recent_runs()
-            return
-        if pattern == r"^/api/v1/metrics/runs/([^/]+)/timeline$" and method == "GET":
-            self._handle_metrics_run_timeline(run_id)
-            return
-        if pattern == r"^/api/v1/metrics/active-run$" and method == "GET":
-            self._handle_metrics_active_run()
-            return
-        if pattern == r"^/api/v1/metrics/runs/([^/]+)/detail$" and method == "GET":
-            self._handle_metrics_run_detail(run_id)
-            return
-        if pattern == r"^/api/v1/metrics/runs/([^/]+)/llm-trace$" and method == "GET":
-            self._handle_metrics_run_llm_trace(run_id)
-            return
-        if pattern == r"^/api/v1/metrics/runs/([^/]+)/artifacts$" and method == "GET":
-            self._handle_metrics_run_artifacts(run_id)
-            return
-        if pattern == r"^/api/v1/metrics/runs/([^/]+)/diff$" and method == "GET":
-            self._handle_metrics_run_diff(run_id)
-            return
-        if pattern == r"^/api/v1/metrics/runs/([^/]+)/artifact-markdown$" and method == "GET":
-            self._handle_metrics_run_artifact_markdown(run_id)
-            return
-        if pattern == r"^/dashboard$" and method == "GET":
-            self._handle_dashboard()
-            return
-        if pattern == r"^/dashboard/assets/(.+)$" and method == "GET":
-            self._handle_dashboard_assets(groups[0])
-            return
-
-        if pattern == r"^/docs$" and method == "GET":
-            self._html_response(SWAGGER_UI_HTML)
-            return
-        if pattern == r"^/redoc$" and method == "GET":
-            self._html_response(REDOC_HTML)
-            return
-
-        self._json_response(404, {"error": "未找到路由"})
+    def _handle_redoc(self) -> None:
+        self._html_response(REDOC_HTML)
 
     def _handle_list_pipelines(self) -> None:
         parsed = urlparse(self.path)
@@ -553,8 +496,7 @@ class DevFlowApiHandler(BaseHTTPRequestHandler):
             self._json_response(400, {"error": "requirement_text 不能为空"})
             return
 
-        analyzer = body.get("analyzer", "llm")
-        model = body.get("model", "heuristic-local-v1")
+        model = body.get("model", "")
         custom_stages = body.get("stages")
         pipeline_template = body.get("pipeline_template")
         provider_override = body.get("provider")
@@ -601,7 +543,6 @@ class DevFlowApiHandler(BaseHTTPRequestHandler):
                 "sender_id": None,
             },
             "detected_input": {"kind": detected.kind, "value": detected.value},
-            "analyzer": analyzer,
             "model": model,
             "stages": stages,
             "pipeline_config": pipeline_config,
@@ -840,7 +781,7 @@ class DevFlowApiHandler(BaseHTTPRequestHandler):
         dist_dir = Path(__file__).parent / "dashboard" / "dist"
         index_path = dist_dir / "index.html"
         if not index_path.exists():
-            self._json_response(503, {"error": "仪表板未构建，请先运行 npm run build"})
+            self._json_response(503, {"error": "仪表板文件缺失，请检查 devflow/dashboard/dist/ 目录"})
             return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -872,6 +813,29 @@ class DevFlowApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(asset_path.read_bytes())
 
+    def _handle_dashboard_static(self, filename: str) -> None:
+        dist_dir = Path(__file__).parent / "dashboard" / "dist"
+        file_path = dist_dir / filename
+        try:
+            file_path.resolve().relative_to(dist_dir.resolve())
+        except ValueError:
+            self._json_response(403, {"error": "禁止访问"})
+            return
+        if not file_path.exists():
+            self._json_response(404, {"error": "未找到资源"})
+            return
+        content_type = "application/octet-stream"
+        if filename.endswith(".svg"):
+            content_type = "image/svg+xml"
+        elif filename.endswith(".png"):
+            content_type = "image/png"
+        elif filename.endswith(".ico"):
+            content_type = "image/x-icon"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.end_headers()
+        self.wfile.write(file_path.read_bytes())
+
 
 def _make_overridden_llm_config(base: LlmConfig, provider: str) -> LlmConfig:
     return LlmConfig(
@@ -886,10 +850,10 @@ def _make_overridden_llm_config(base: LlmConfig, provider: str) -> LlmConfig:
     )
 
 
-def create_server(host: str = "127.0.0.1", port: int = 8080, out_dir: Path | str | None = None) -> HTTPServer:
+def create_server(host: str = "127.0.0.1", port: int = 8080, out_dir: Path | str | None = None) -> ThreadingHTTPServer:
     out = Path(out_dir) if out_dir else Path("artifacts/runs")
     DevFlowApiHandler.out_dir = out
-    server = HTTPServer((host, port), DevFlowApiHandler)
+    server = ThreadingHTTPServer((host, port), DevFlowApiHandler)
     return server
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
@@ -16,6 +17,7 @@ PROVIDER_BASE_URLS = {
     "ark": "https://ark.cn-beijing.volces.com/api/v3",
     "bailian": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "deepseek": "https://api.deepseek.com",
+    "longcat": "https://api.longcat.chat/openai",
     "mimo": "https://api.xiaomimimo.com/v1",
     "openai": "https://api.openai.com/v1",
 }
@@ -26,6 +28,7 @@ class LlmError(RuntimeError):
 
 
 UrlOpen = Callable[..., Any]
+_ORIGINAL_URLOPEN = request.urlopen
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +37,9 @@ class LlmCompletion:
     raw_response: dict[str, Any]
     usage: dict[str, Any] | None
     usage_source: str
+    provider: str
+    model: str
+    base_url_host: str | None
     started_at: str
     ended_at: str
     duration_ms: int
@@ -48,6 +54,9 @@ class LlmCompletion:
             "content": self.content,
             "usage": self.usage,
             "usage_source": self.usage_source,
+            "provider": self.provider,
+            "model": self.model,
+            "base_url_host": self.base_url_host,
             "raw_response": self.raw_response,
             "finish_reason": self.finish_reason,
         }
@@ -79,14 +88,11 @@ def check_llm_config(config: LlmConfig) -> None:
     resolve_base_url(config)
 
 
-def chat_completion(
+def build_chat_completion_request_body(
     config: LlmConfig,
     messages: list[dict[str, str]],
-    *,
-    opener: UrlOpen | None = None,
-) -> LlmCompletion:
-    check_llm_config(config)
-    payload = {
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "model": config.model,
         "messages": messages,
         "temperature": config.temperature,
@@ -94,34 +100,55 @@ def chat_completion(
     }
     if config.response_format_json:
         payload["response_format"] = {"type": "json_object"}
+    return payload
+
+
+def chat_completion(
+    config: LlmConfig,
+    messages: list[dict[str, str]],
+    *,
+    opener: UrlOpen | None = None,
+) -> LlmCompletion:
+    check_llm_config(config)
+    payload = build_chat_completion_request_body(config, messages)
     url = f"{resolve_base_url(config)}/chat/completions"
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    http_request = request.Request(
-        url,
-        data=body,
-        headers={
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
+    headers = {
+        "Authorization": f"Bearer {config.api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
 
     open_url = opener or request.urlopen
     started_at = utc_now()
     started_counter = perf_counter()
     try:
-        response_context = open_url(http_request, timeout=config.timeout_seconds)
-        with response_context as response:
-            status = getattr(response, "status", response.getcode())
-            response_body = response.read().decode("utf-8")
+        if opener is not None or _is_patched_urlopen(open_url):
+            status, response_body = _open_chat_completion_direct(
+                url,
+                body,
+                headers,
+                config.timeout_seconds,
+                open_url,
+            )
+        else:
+            status, response_body = _open_chat_completion_with_deadline(
+                url,
+                body,
+                headers,
+                config.timeout_seconds,
+            )
     except error.HTTPError as exc:
         error_body = _read_error_body(exc)
         if config.api_key:
             error_body = error_body.replace(config.api_key, "[REDACTED]")
         detail = f": {error_body}" if error_body else ""
         raise LlmError(f"LLM 请求失败，HTTP {exc.code}{detail}") from exc
+    except _TotalTimeoutError as exc:
+        raise LlmError(f"LLM 请求总耗时超时，已等待 {config.timeout_seconds} 秒。") from exc
     except socket.timeout as exc:
+        if opener is None:
+            raise LlmError(f"LLM 请求总耗时超时，已等待 {config.timeout_seconds} 秒。") from exc
         raise LlmError(f"LLM 请求超时，已等待 {config.timeout_seconds} 秒。") from exc
     except (error.URLError, TimeoutError) as exc:
         raise LlmError("LLM 请求在收到响应前失败。") from exc
@@ -149,6 +176,9 @@ def chat_completion(
         raw_response=response_json,
         usage=usage,
         usage_source="provider" if usage is not None else "missing",
+        provider=config.provider,
+        model=config.model,
+        base_url_host=base_url_host(config),
         started_at=started_at,
         ended_at=ended_at,
         duration_ms=duration_ms,
@@ -158,6 +188,112 @@ def chat_completion(
     if finish_reason == "length":
         raise LlmError(f"LLM 响应被截断（finish_reason=length），模型 {config.model} 的 max_tokens={config.max_tokens} 不足以完成完整输出。建议增大 llm.max_tokens 或精简 prompt。")
     return result
+
+
+class _TotalTimeoutError(TimeoutError):
+    pass
+
+
+def _build_http_request(url: str, body: bytes, headers: dict[str, str]) -> request.Request:
+    return request.Request(
+        url,
+        data=body,
+        headers=headers,
+        method="POST",
+    )
+
+
+def _is_patched_urlopen(open_url: UrlOpen) -> bool:
+    return not (
+        getattr(open_url, "__module__", "") == "urllib.request"
+        and getattr(open_url, "__name__", "") == "urlopen"
+    )
+
+
+def _open_chat_completion_direct(
+    url: str,
+    body: bytes,
+    headers: dict[str, str],
+    timeout_seconds: int,
+    opener: UrlOpen,
+) -> tuple[int, str]:
+    http_request = _build_http_request(url, body, headers)
+    response_context = opener(http_request, timeout=timeout_seconds)
+    with response_context as response:
+        status = getattr(response, "status", response.getcode())
+        response_body = response.read().decode("utf-8")
+    return status, response_body
+
+
+def _open_chat_completion_with_deadline(
+    url: str,
+    body: bytes,
+    headers: dict[str, str],
+    timeout_seconds: int,
+) -> tuple[int, str]:
+    # Use a threading-based deadline instead of multiprocessing.spawn.
+    # The previous multiprocessing.spawn approach had two critical issues on Windows:
+    # 1. It requires the calling script to have ``if __name__ == "__main__":`` protection;
+    #    without it, the child process re-imports the main module and recurses.
+    # 2. Starting a fresh Python process for every LLM call adds significant overhead
+    #    (multiple seconds on Windows) and is incompatible with environments where
+    #    the entry point is a script without the __main__ guard.
+    # The threading approach avoids both problems: no __main__ guard is needed,
+    # no process spawn overhead, and the socket timeout + join deadline together
+    # enforce a hard wall-clock limit.
+    worker_socket_timeout = timeout_seconds + 5
+    result: dict[str, Any] = {"done": False}
+
+    def _worker() -> None:
+        try:
+            status, response_body = _open_chat_completion_direct(
+                url,
+                body,
+                headers,
+                worker_socket_timeout,
+                request.urlopen,
+            )
+            result["kind"] = "ok"
+            result["payload"] = {"status": status, "body": response_body}
+        except error.HTTPError as exc:
+            result["kind"] = "http_error"
+            result["payload"] = {"code": exc.code, "reason": str(exc)}
+        except socket.timeout:
+            result["kind"] = "socket_timeout"
+        except TimeoutError as exc:
+            result["kind"] = "timeout"
+            result["payload"] = str(exc)
+        except BaseException as exc:
+            result["kind"] = "error"
+            result["payload"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            result["done"] = True
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout_seconds)
+
+    if thread.is_alive():
+        # Thread is still running past the deadline. The daemon flag ensures it
+        # won't block process exit, and the socket timeout will eventually let
+        # it clean up on its own.
+        raise _TotalTimeoutError()
+
+    if not result.get("done"):
+        raise error.URLError("LLM request worker exited without a result")
+
+    kind = result.get("kind", "error")
+    payload = result.get("payload")
+
+    if kind == "ok":
+        return payload["status"], payload["body"]
+    if kind == "http_error":
+        raise error.HTTPError(url, payload["code"], payload.get("reason") or "", {}, None)
+    if kind == "socket_timeout":
+        raise _TotalTimeoutError()
+    if kind == "timeout":
+        raise TimeoutError(payload)
+    raise error.URLError(payload)
 
 
 def chat_completion_content(

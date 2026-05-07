@@ -73,11 +73,11 @@
 |------|----------|
 | Pipeline 编排 | LangGraph（状态图 + 检查点恢复） |
 | 后端 | Python 3.11+, stdlib HTTP Server |
-| 前端仪表板 | React 18, TypeScript, Vite, Tailwind CSS |
+| 前端仪表板 | Vanilla HTML/JS/CSS（零构建，marked.js CDN） |
 | 飞书集成 | lark-cli 1.0.23（WebSocket 长连接） |
 | LLM 接入 | OpenAI-compatible Chat Completions |
 | 语义索引 | Python ast 模块 + tree-sitter（JS/TS 可选） |
-| 包管理 | uv（Python）, npm（前端 + lark-cli） |
+| 包管理 | uv（Python）, npm（lark-cli） |
 
 ## 项目结构
 
@@ -97,7 +97,7 @@ devflow/
 ├── llm.py           # 多 Provider LLM 客户端
 ├── cli.py           # CLI 入口
 └── config.py        # 配置加载
-dashboard/           # Pipeline 实时监控仪表板（React SPA）
+dashboard_archive/   # 旧版 React 仪表板源码（已归档）
 docs/                # 项目文档
 ```
 
@@ -199,7 +199,7 @@ npm run dev
 
 ### 5. 访问仪表板和 API 文档
 
-- Pipeline 仪表板：`http://127.0.0.1:5173`
+- Pipeline 仪表板：`http://127.0.0.1:8080/dashboard`
 - Swagger UI：`http://127.0.0.1:8080/docs`
 - ReDoc：`http://127.0.0.1:8080/redoc`
 - OpenAPI JSON：`http://127.0.0.1:8080/api/v1/openapi.json`

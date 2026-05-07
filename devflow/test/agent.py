@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from devflow.code.tools import CodeToolExecutor, capture_git_diff
+from devflow.code.tools import (
+    CodeToolExecutor,
+    capture_workspace_changes,
+    compact_agent_action,
+    compact_tool_events,
+    compact_tool_result,
+)
 from devflow.config import LlmConfig
 from devflow.llm import LlmError, UrlOpen, base_url_host, chat_completion, parse_llm_json
 from devflow.solution.models import SCHEMA_VERSION as SOLUTION_SCHEMA_VERSION
@@ -64,8 +71,10 @@ def build_test_generation_artifact(
     ]
     finish: dict[str, Any] | None = None
     completions: list[dict[str, Any]] = []
+    reference_documents = _load_reference_docs_for_test()
 
     for turn in range(1, max_turns + 1):
+        prompt_reference_docs = reference_documents if turn == 1 else _reference_doc_summaries(reference_documents)
         messages.append(
             {
                 "role": "user",
@@ -74,8 +83,8 @@ def build_test_generation_artifact(
                     solution,
                     code_generation,
                     detected_stack,
-                    executor.events,
-                    reference_documents=_load_reference_docs_for_test(),
+                    compact_tool_events(executor.events),
+                    reference_documents=prompt_reference_docs,
                 ),
             }
         )
@@ -105,19 +114,26 @@ def build_test_generation_artifact(
                 },
             )
         action = normalize_agent_action(parse_llm_json(completion.content))
-        messages.append({"role": "assistant", "content": json.dumps(action, ensure_ascii=False)})
+        messages.append({"role": "assistant", "content": json.dumps(compact_agent_action(action), ensure_ascii=False)})
         if action["action"] == "finish":
             finish = action
             break
         result = executor.execute(action["tool"], action["input"])
-        messages.append({"role": "user", "content": json.dumps({"tool_result": result}, ensure_ascii=False)})
+        messages.append({"role": "user", "content": json.dumps({"tool_result": compact_tool_result(result)}, ensure_ascii=False)})
         if stage_trace is not None:
             stage_trace.event("test_tool_completed", status="success", payload=executor.events[-1])
 
     if finish is None:
         raise LlmError("测试生成 agent 达到最大轮数但没有返回 finish。")
 
-    diff_text = capture_git_diff(workspace_root)
+    workspace_changes = capture_workspace_changes(workspace_root)
+    generated_tests = _text_list(finish.get("generated_tests"))
+    production_paths = _production_paths(code_generation, solution)
+    test_validity = assess_test_validity(
+        workspace_root,
+        generated_tests=generated_tests,
+        production_paths=production_paths,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "metadata": {
@@ -136,12 +152,14 @@ def build_test_generation_artifact(
             "code_generation_artifact": str(code_generation_path) if code_generation_path is not None else "",
         },
         "detected_stack": detected_stack,
-        "generated_tests": _text_list(finish.get("generated_tests")),
+        "generated_tests": generated_tests,
         "test_commands": _test_commands(executor.events),
+        "test_validity": test_validity,
         "summary": str(finish.get("summary") or "").strip(),
         "warnings": _text_list(finish.get("warnings")),
         "tool_events": executor.events,
-        "diff": diff_text,
+        "workspace_changes": workspace_changes,
+        "diff": workspace_changes.get("diff", ""),
         "prompt": {
             "system_prompt": TEST_GENERATION_SYSTEM_PROMPT,
             "turn_count": len(completions),
@@ -165,6 +183,58 @@ def validate_test_generation_inputs(
     workspace = code_generation.get("workspace")
     if not isinstance(workspace, dict) or not workspace.get("path"):
         raise ValueError("代码生成产物缺少 workspace.path。")
+
+
+def assess_test_validity(
+    workspace_root: Path | str,
+    *,
+    generated_tests: list[str],
+    production_paths: list[str],
+) -> dict[str, Any]:
+    root = Path(workspace_root).expanduser().resolve()
+    normalized_tests = [path.replace("\\", "/") for path in generated_tests if path]
+    normalized_production = [path.replace("\\", "/") for path in production_paths if path]
+    reasons: list[str] = []
+    if not normalized_tests:
+        return {
+            "proves_production_code": True,
+            "reasons": ["未生成新测试，沿用已有验证结果。"],
+            "production_paths": normalized_production,
+            "generated_tests": normalized_tests,
+        }
+    if not normalized_production:
+        return {
+            "proves_production_code": False,
+            "reasons": ["缺少可验证的生产代码路径。"],
+            "production_paths": normalized_production,
+            "generated_tests": normalized_tests,
+        }
+
+    any_reference = False
+    copied_without_reference: list[str] = []
+    for test_rel in normalized_tests:
+        test_path = (root / test_rel).resolve()
+        try:
+            content = test_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            reasons.append(f"{test_rel} 无法读取，不能证明生产代码。")
+            continue
+        if _looks_like_copied_logic(content):
+            copied_without_reference.append(test_rel)
+        elif any(_references_production_path(content, prod) for prod in normalized_production):
+            any_reference = True
+        else:
+            reasons.append(f"{test_rel} 未引用或执行生产代码文件。")
+
+    for path in copied_without_reference:
+        reasons.append(f"{path} 复制了生产逻辑但未引用生产代码。")
+    proves = any_reference and not copied_without_reference
+    return {
+        "proves_production_code": proves,
+        "reasons": [] if proves else reasons,
+        "production_paths": normalized_production,
+        "generated_tests": normalized_tests,
+    }
 
 
 def normalize_agent_action(payload: dict[str, Any]) -> dict[str, Any]:
@@ -232,6 +302,66 @@ def _test_commands(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return commands
+
+
+def _production_paths(code_generation: dict[str, Any], solution: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+    changes = code_generation.get("workspace_changes")
+    if isinstance(changes, dict):
+        candidates.extend(_text_list(changes.get("changed_files")))
+    candidates.extend(_text_list(code_generation.get("changed_files")))
+    for item in solution.get("change_plan") if isinstance(solution.get("change_plan"), list) else []:
+        if isinstance(item, dict):
+            candidates.extend(_text_list(item.get("path")))
+    result: list[str] = []
+    seen: set[str] = set()
+    for path in candidates:
+        rel = path.replace("\\", "/")
+        parts = Path(rel).parts
+        if any(part in {"test", "tests", "__tests__"} for part in parts):
+            continue
+        if rel.endswith((".test.js", ".spec.js", "_test.py")):
+            continue
+        if rel and rel not in seen:
+            seen.add(rel)
+            result.append(rel)
+    return result
+
+
+def _references_production_path(content: str, production_path: str) -> bool:
+    normalized = content.replace("\\", "/")
+    path = production_path.replace("\\", "/")
+    stem = Path(path).stem
+    basename = Path(path).name
+    if path in normalized or basename in normalized:
+        return True
+    if re.search(rf"\bfrom\s+{re.escape(stem)}\s+import\b", normalized):
+        return True
+    if re.search(rf"\bimport\s+{re.escape(stem)}\b", normalized):
+        return True
+    if re.search(rf"require\(['\"].*{re.escape(stem)}(?:\.[A-Za-z0-9]+)?['\"]\)", normalized):
+        return True
+    if re.search(rf"from\s+['\"].*{re.escape(stem)}(?:\.[A-Za-z0-9]+)?['\"]", normalized):
+        return True
+    return False
+
+
+def _looks_like_copied_logic(content: str) -> bool:
+    lowered = content.lower()
+    markers = ("复制", "提取", "copy", "copied", "mocked game constants", "模拟游戏常量")
+    return any(marker in lowered for marker in markers)
+
+
+def _reference_doc_summaries(reference_documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": doc.get("name"),
+            "title": doc.get("title"),
+            "loaded": True,
+            "content_chars": len(str(doc.get("content") or "")),
+        }
+        for doc in reference_documents
+    ]
 
 
 def _text_list(value: Any) -> list[str]:

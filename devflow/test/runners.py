@@ -12,6 +12,8 @@ def detect_test_stack(workspace_root: Path | str) -> dict[str, Any]:
         return _detect_python_stack(root)
     if (root / "package.json").exists():
         return _detect_javascript_stack(root)
+    if _has_plain_javascript_or_html(root):
+        return _detect_plain_html_js_stack(root)
     if (root / "pom.xml").exists() or (root / "build.gradle").exists() or (root / "build.gradle.kts").exists():
         return _detect_java_stack(root)
     return {
@@ -66,6 +68,25 @@ def _detect_javascript_stack(root: Path) -> dict[str, Any]:
         "commands": [{"name": framework, "command": "npm.cmd test"}] if test_script else [],
         "generators": [],
     }
+
+
+def _detect_plain_html_js_stack(root: Path) -> dict[str, Any]:
+    commands = []
+    if shutil.which("node") is not None:
+        commands.append({"name": "node-assert", "command": "node test/game.test.js"})
+    return {
+        "language": "javascript",
+        "framework": "html-js",
+        "commands": commands,
+        "generators": [],
+    }
+
+
+def _has_plain_javascript_or_html(root: Path) -> bool:
+    for pattern in ("*.html", "*.js", "*.mjs", "*.cjs"):
+        if any(path.is_file() for path in root.glob(pattern)):
+            return True
+    return False
 
 
 def _detect_java_stack(root: Path) -> dict[str, Any]:

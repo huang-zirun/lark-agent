@@ -259,7 +259,7 @@ def _workspace_payload(
         "path": str(path),
         "project_name": project_name,
         "repo_url": remote,
-        "base_branch": "main",
+        "base_branch": _actual_git_branch(path),
         "writable": writable,
         "source": source,
     }
@@ -276,16 +276,52 @@ def _init_git(path: Path) -> None:
     if (path / ".git").exists():
         return
     try:
-        subprocess.run(
-            ["git", "init"],
+        completed = subprocess.run(
+            ["git", "init", "-b", "main"],
             cwd=path,
-            check=True,
+            check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
+        if completed.returncode != 0:
+            subprocess.run(
+                ["git", "init"],
+                cwd=path,
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
     except (OSError, subprocess.SubprocessError) as exc:
         raise WorkspaceError(f"新项目目录已创建，但 git init 失败：{path}。") from exc
+
+
+def _actual_git_branch(path: Path) -> str:
+    if not (path / ".git").exists():
+        return ""
+    for command in (["git", "symbolic-ref", "--short", "HEAD"], ["git", "rev-parse", "--abbrev-ref", "HEAD"]):
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=path,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        branch = (completed.stdout or "").strip()
+        if completed.returncode == 0 and branch and branch != "HEAD":
+            return branch
+    return ""
 
 
 def _exclude_dir(name: str, excluded_seen: set[str]) -> bool:

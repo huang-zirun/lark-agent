@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from devflow.code.tools import compact_agent_action, compact_tool_events, compact_tool_result
 from devflow.config import LlmConfig
 from devflow.llm import LlmError, UrlOpen, base_url_host, chat_completion, parse_llm_json
 from devflow.review.models import AGENT_NAME, AGENT_VERSION, SCHEMA_VERSION
@@ -65,8 +66,10 @@ def build_code_review_artifact(
     ]
     finish: dict[str, Any] | None = None
     completions: list[dict[str, Any]] = []
+    reference_documents = _load_reference_docs_for_review()
 
     for turn in range(1, max_turns + 1):
+        prompt_reference_docs = reference_documents if turn == 1 else _reference_doc_summaries(reference_documents)
         messages.append(
             {
                 "role": "user",
@@ -75,8 +78,8 @@ def build_code_review_artifact(
                     solution,
                     code_generation,
                     test_generation,
-                    executor.events,
-                    reference_documents=_load_reference_docs_for_review(),
+                    compact_tool_events(executor.events),
+                    reference_documents=prompt_reference_docs,
                 ),
             }
         )
@@ -106,12 +109,12 @@ def build_code_review_artifact(
                 },
             )
         action = normalize_agent_action(parse_llm_json(completion.content))
-        messages.append({"role": "assistant", "content": json.dumps(action, ensure_ascii=False)})
+        messages.append({"role": "assistant", "content": json.dumps(compact_agent_action(action), ensure_ascii=False)})
         if action["action"] == "finish":
             finish = action
             break
         result = executor.execute(action["tool"], action["input"])
-        messages.append({"role": "user", "content": json.dumps({"tool_result": result}, ensure_ascii=False)})
+        messages.append({"role": "user", "content": json.dumps({"tool_result": compact_tool_result(result)}, ensure_ascii=False)})
         if stage_trace is not None:
             stage_trace.event("review_tool_completed", status="success", payload=executor.events[-1])
 
@@ -121,6 +124,7 @@ def build_code_review_artifact(
     findings = normalize_findings(finish.get("findings"))
     test_summary = summarize_tests(test_generation)
     findings.extend(test_failure_findings(test_summary))
+    findings.extend(test_validity_findings(test_generation))
     blocking_count = sum(1 for finding in findings if finding.get("blocking"))
     quality_gate = normalize_quality_gate(finish.get("quality_gate"), blocking_count)
     review_status = normalize_review_status(finish.get("review_status"), quality_gate)
@@ -153,9 +157,14 @@ def build_code_review_artifact(
         "findings": findings,
         "test_summary": test_summary,
         "diff_summary": {
-            "changed_files": _text_list(code_generation.get("changed_files")),
-            "code_diff_bytes": len(str(code_generation.get("diff") or "").encode("utf-8")),
-            "test_diff_bytes": len(str(test_generation.get("diff") or "").encode("utf-8")),
+            "changed_files": _unique_texts(
+                _workspace_changed_files(code_generation),
+                _workspace_changed_files(test_generation),
+                code_generation.get("changed_files"),
+                test_generation.get("generated_tests"),
+            ),
+            "code_diff_bytes": len(str(_workspace_diff(code_generation)).encode("utf-8")),
+            "test_diff_bytes": len(str(_workspace_diff(test_generation)).encode("utf-8")),
         },
         "repair_recommendations": _text_list(finish.get("repair_recommendations")),
         "summary": str(finish.get("summary") or "").strip(),
@@ -163,7 +172,7 @@ def build_code_review_artifact(
         "tool_events": executor.events,
         "reference_documents_used": [
             {"name": doc.get("name"), "title": doc.get("title"), "chars_injected": len(doc.get("content", ""))}
-            for doc in _load_reference_docs_for_review()
+            for doc in reference_documents
         ],
         "prompt": {
             "system_prompt": CODE_REVIEW_SYSTEM_PROMPT,
@@ -276,6 +285,28 @@ def test_failure_findings(test_summary: dict[str, Any]) -> list[dict[str, Any]]:
     return findings
 
 
+def test_validity_findings(test_generation: dict[str, Any]) -> list[dict[str, Any]]:
+    validity = test_generation.get("test_validity") if isinstance(test_generation.get("test_validity"), dict) else {}
+    if validity.get("proves_production_code") is not False:
+        return []
+    reasons = _text_list(validity.get("reasons"))
+    evidence = "；".join(reasons) if reasons else "测试未能证明生产代码。"
+    return [
+        {
+            "id": "CR-TEST-VALIDITY",
+            "severity": "P1",
+            "category": "tests",
+            "path": "",
+            "line": None,
+            "title": "测试未覆盖生产代码",
+            "description": "测试命令虽然可能通过，但测试产物没有引用或执行生产代码，不能作为交付证据。",
+            "evidence": evidence,
+            "fix_suggestion": "让测试直接 import 生产模块、执行实际 HTML/浏览器脚本，或补充可重复的真实集成验证。",
+            "blocking": True,
+        }
+    ]
+
+
 def normalize_findings(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -337,3 +368,39 @@ def _text_list(value: Any) -> list[str]:
         return [str(item).strip() for item in value if str(item).strip()]
     text = str(value).strip()
     return [text] if text else []
+
+
+def _workspace_changed_files(artifact: dict[str, Any]) -> list[str]:
+    changes = artifact.get("workspace_changes") if isinstance(artifact.get("workspace_changes"), dict) else {}
+    return _text_list(changes.get("changed_files"))
+
+
+def _workspace_diff(artifact: dict[str, Any]) -> str:
+    changes = artifact.get("workspace_changes") if isinstance(artifact.get("workspace_changes"), dict) else {}
+    if isinstance(changes.get("diff"), str):
+        return changes["diff"]
+    return str(artifact.get("diff") or "")
+
+
+def _unique_texts(*values: Any) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        for item in _text_list(value):
+            normalized = item.replace("\\", "/")
+            if normalized not in seen:
+                seen.add(normalized)
+                result.append(normalized)
+    return result
+
+
+def _reference_doc_summaries(reference_documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": doc.get("name"),
+            "title": doc.get("title"),
+            "loaded": True,
+            "content_chars": len(str(doc.get("content") or "")),
+        }
+        for doc in reference_documents
+    ]

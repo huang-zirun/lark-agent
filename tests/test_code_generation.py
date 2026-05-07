@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 import unittest
 from contextlib import contextmanager
 from io import StringIO
@@ -12,7 +13,7 @@ from devflow.config import LlmConfig
 from devflow.cli import main
 from devflow.code.agent import build_code_generation_artifact
 from devflow.code.permissions import PermissionDenied, resolve_workspace_path, validate_powershell_command
-from devflow.code.tools import CodeToolExecutor
+from devflow.code.tools import CodeToolExecutor, capture_workspace_changes
 from devflow.trace import RunTrace
 
 
@@ -136,6 +137,47 @@ class CodeGenerationTests(unittest.TestCase):
             self.assertTrue((workspace / "code-llm-response-turn1.json").exists())
             self.assertTrue((workspace / "code-llm-request-turn2.json").exists())
             self.assertTrue((workspace / "code-llm-response-turn2.json").exists())
+            self.assertIn("workspace_changes", artifact)
+            self.assertIn("hello.txt", artifact["workspace_changes"]["changed_files"])
+
+    def test_workspace_change_capture_includes_untracked_text_and_excludes_runtime_dirs(self) -> None:
+        with temp_workspace() as workspace:
+            subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True, text=True)
+            (workspace / "index.html").write_text("<canvas></canvas>\n", encoding="utf-8")
+            (workspace / ".devflow-index").mkdir()
+            (workspace / ".devflow-index" / "summary.json").write_text("{}", encoding="utf-8")
+
+            changes = capture_workspace_changes(workspace)
+
+        self.assertIn("index.html", changes["changed_files"])
+        self.assertIn("index.html", changes["untracked_files"])
+        self.assertNotIn(".devflow-index/summary.json", changes["changed_files"])
+        self.assertIn("diff --git a/index.html b/index.html", changes["diff"])
+        self.assertIn("+<canvas></canvas>", changes["diff"])
+
+    def test_code_generation_compacts_tool_results_in_next_llm_turn(self) -> None:
+        big_content = "A" * 5000
+        responses = [
+            FakeLlmResponse({"action": "tool", "tool": "write_file", "input": {"path": "big.txt", "content": big_content}}),
+            FakeLlmResponse({"action": "finish", "summary": "已创建大文件", "changed_files": ["big.txt"]}),
+        ]
+        request_bodies: list[dict] = []
+
+        def opener(request, timeout: int):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        with temp_workspace() as workspace:
+            artifact = build_code_generation_artifact(
+                solution_payload(workspace),
+                LlmConfig(provider="custom", api_key="SECRET_VALUE", model="test-model", base_url="https://example.test/v1"),
+                opener=opener,
+            )
+
+        second_request = json.dumps(request_bodies[1], ensure_ascii=False)
+        self.assertEqual(artifact["changed_files"], ["big.txt"])
+        self.assertNotIn(big_content, second_request)
+        self.assertIn("truncated", second_request)
 
     def test_cli_generates_code_from_solution_file(self) -> None:
         responses = [

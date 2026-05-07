@@ -53,6 +53,7 @@ class MessageBuffer:
         self._ready: list[dict[str, Any]] = []
         self._ready_event = threading.Event()
         self._finished = False
+        self._error: BaseException | None = None
         self._consumer_thread: threading.Thread | None = None
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
@@ -72,6 +73,9 @@ class MessageBuffer:
         try:
             for event in self._events:
                 self._handle_event(event)
+        except BaseException as exc:
+            with self._lock:
+                self._error = exc
         finally:
             with self._lock:
                 for key in list(self._buffers):
@@ -138,6 +142,8 @@ class MessageBuffer:
                 yield event
 
             if done:
+                if self._error is not None:
+                    raise self._error
                 break
 
     @staticmethod

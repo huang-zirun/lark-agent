@@ -114,6 +114,12 @@ def review_test_artifact_payload(workspace: Path, *, returncode: int = 0) -> dic
         "warnings": [],
         "tool_events": [],
         "diff": "diff --git a/tests/test_calculator.py b/tests/test_calculator.py\n",
+        "test_validity": {
+            "proves_production_code": True,
+            "reasons": [],
+            "production_paths": ["calculator.py"],
+            "generated_tests": ["tests/test_calculator.py"],
+        },
     }
 
 
@@ -198,6 +204,45 @@ class CodeReviewTests(unittest.TestCase):
         self.assertFalse(artifact["quality_gate"]["passed"])
         self.assertEqual(artifact["test_summary"]["failed_commands"], 1)
         self.assertTrue(any(finding["category"] == "tests" for finding in artifact["findings"]))
+
+    def test_invalid_test_validity_blocks_review_even_if_commands_pass(self) -> None:
+        responses = [
+            FakeLlmResponse(
+                {
+                    "action": "finish",
+                    "review_status": "passed",
+                    "quality_gate": {"passed": True, "blocking_findings": 0, "risk_level": "low"},
+                    "findings": [],
+                    "repair_recommendations": [],
+                    "summary": "模型未发现问题。",
+                    "warnings": [],
+                }
+            )
+        ]
+
+        def opener(request, timeout: int):
+            return responses.pop(0)
+
+        with temp_workspace() as workspace:
+            test_artifact = review_test_artifact_payload(workspace)
+            test_artifact["test_validity"] = {
+                "proves_production_code": False,
+                "reasons": ["test/game.test.js 复制了生产函数，没有引用生产文件。"],
+                "production_paths": ["index.html"],
+                "generated_tests": ["test/game.test.js"],
+            }
+            artifact = build_code_review_artifact(
+                requirement_payload(),
+                solution_payload(workspace),
+                code_generation_payload(workspace),
+                test_artifact,
+                LlmConfig(provider="custom", api_key="SECRET_VALUE", model="test-model", base_url="https://example.test/v1"),
+                opener=opener,
+            )
+
+        self.assertEqual(artifact["review_status"], "needs_changes")
+        self.assertFalse(artifact["quality_gate"]["passed"])
+        self.assertTrue(any(finding["category"] == "tests" and finding["blocking"] for finding in artifact["findings"]))
 
     def test_render_markdown_and_cli_generate_review(self) -> None:
         responses = [

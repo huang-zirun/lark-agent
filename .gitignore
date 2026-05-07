@@ -18,6 +18,7 @@ node_modules/
 # === 构建产物 ===
 dist/
 build/
+!devflow/dashboard/dist/
 artifacts/
 
 # === 配置/密钥 ===

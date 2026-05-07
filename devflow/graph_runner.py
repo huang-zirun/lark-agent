@@ -43,10 +43,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only before dependen
             return _CompiledGraph()
 
 from devflow.code.agent import QualityGateError
-from devflow.config import DevflowConfig, LlmConfig, load_config
+from devflow.config import ConfigError, DevflowConfig, LlmConfig, load_config
 from devflow.intake.analyzer import build_requirement_artifact
 from devflow.intake.models import RequirementSource
 from devflow.intake.output import write_artifact
+from devflow.llm import LlmError
 from devflow.pipeline import (
     build_audit_payload,
     load_run_payload,
@@ -56,6 +57,7 @@ from devflow.pipeline import (
     send_stage_notification,
     set_stage_status,
     stage_status,
+    sync_run_lifecycle,
     utc_now,
     write_json,
 )
@@ -95,8 +97,7 @@ def run_pipeline_graph(
         "last_node": state.get("last_node"),
         "updated_at": utc_now(),
     }
-    if updated.get("status") not in {"paused", "terminated"}:
-        updated["lifecycle_status"] = updated.get("status", "running")
+    sync_run_lifecycle(updated)
     write_json(Path(run_dir) / "run.json", updated)
     return updated
 
@@ -153,13 +154,11 @@ def _trigger_node(state: dict[str, Any]) -> dict[str, Any]:
     run_payload["lifecycle_status"] = "running"
     write_json(run_path, run_payload)
 
-    analyzer = str(run_payload.get("analyzer") or "llm")
-    model = str(run_payload.get("model") or "heuristic-local-v1")
-    if analyzer == "heuristic":
-        artifact = build_requirement_artifact(source, model=model, analyzer="heuristic", stage_trace=stage_trace)
-    else:
-        config = load_config_for_run(run_payload, require_llm_api_key=True, require_llm_model=True)
-        artifact = build_requirement_artifact(source, analyzer="llm", llm_config=config.llm, stage_trace=stage_trace)
+    config = load_config_for_run(run_payload, require_llm_api_key=True, require_llm_model=True)
+    try:
+        artifact = build_requirement_artifact(source, llm_config=config.llm, stage_trace=stage_trace)
+    except (ConfigError, LlmError):
+        artifact = build_requirement_artifact(source)
 
     requirement_path = run_dir / "requirement.json"
     write_artifact(artifact, requirement_path)
@@ -171,9 +170,9 @@ def _trigger_node(state: dict[str, Any]) -> dict[str, Any]:
         ended_at=ended_at,
         artifact=str(requirement_path),
     )
-    run_payload["status"] = "success"
-    run_payload["lifecycle_status"] = "success"
-    run_payload["ended_at"] = ended_at
+    run_payload["status"] = "running"
+    run_payload["lifecycle_status"] = "running"
+    run_payload["ended_at"] = None
     run_payload["requirement_artifact"] = str(requirement_path)
     run_payload["requirement_title"] = (
         artifact.get("normalized_requirement", {}).get("title")
@@ -185,14 +184,13 @@ def _trigger_node(state: dict[str, Any]) -> dict[str, Any]:
     run_payload["audit"] = build_audit_payload(trace, run_dir)
     write_json(run_path, run_payload)
 
-    if analyzer == "llm" and _stage_enabled(run_payload, "solution_design"):
+    if _stage_enabled(run_payload, "solution_design"):
         config = load_config_for_run(run_payload, require_llm_api_key=True, require_llm_model=True)
         with _patched_pipeline_config(config):
             maybe_run_solution_design(
                 artifact,
                 requirement_path,
                 source,
-                analyzer=analyzer,
                 run_dir=run_dir,
                 stages=run_payload["stages"],
                 trace=trace,
@@ -200,6 +198,12 @@ def _trigger_node(state: dict[str, Any]) -> dict[str, Any]:
                 message_id="api",
                 card_reply_sender=_noop_card_reply,
             )
+        sync_run_lifecycle(run_payload)
+        write_json(run_path, run_payload)
+    else:
+        run_payload["status"] = "success"
+        run_payload["lifecycle_status"] = "success"
+        run_payload["ended_at"] = ended_at
         write_json(run_path, run_payload)
 
     state["last_node"] = "requirement_intake"

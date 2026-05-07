@@ -21,7 +21,7 @@ from devflow.pipeline import (
 
 def _fake_config(*, progress_notifications_enabled: bool = True) -> DevflowConfig:
     return DevflowConfig(
-        llm=LlmConfig(provider="ark", api_key="test-key", model="ep-test"),
+        llm=LlmConfig(provider="ark", api_key="test-key", model="test-model"),
         lark=LarkConfig(
             cli_version="1.0.23",
             app_id="cli_a",

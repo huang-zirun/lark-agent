@@ -37,6 +37,14 @@ ARTIFACT_MARKDOWN_SOURCES = {
     "delivery": ("delivery_markdown", "delivery.md"),
 }
 
+STAGE_ARTIFACT_SOURCES = {
+    "requirement_intake": ("requirement_artifact", "requirement.json"),
+    "solution_design": ("solution_artifact", "solution.json"),
+    "code_generation": ("code_generation_artifact", "code-generation.json"),
+    "test_generation": ("test_generation_artifact", "test-generation.json"),
+    "code_review": ("code_review_artifact", "code-review.json"),
+}
+
 
 def _parse_iso_timestamp(iso_str: str | None) -> datetime | None:
     if not iso_str:
@@ -279,6 +287,7 @@ def get_run_llm_trace(run_dir: Path) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     if not run_dir.exists():
         return results
+    run_payload = _load_run_payload_for_metrics(run_dir) or {}
     grouped: dict[tuple[str, int | None], dict[str, Path]] = {}
     for path in run_dir.glob("*llm-*.json"):
         parsed = _parse_llm_audit_filename(path.name)
@@ -302,6 +311,7 @@ def get_run_llm_trace(run_dir: Path) -> list[dict[str, Any]]:
             "usage": None,
             "duration_ms": None,
             "provider": None,
+            "usage_source": None,
             "model": None,
             "turn": turn,
             "started_at": None,
@@ -349,11 +359,16 @@ def get_run_llm_trace(run_dir: Path) -> list[dict[str, Any]]:
                         "total_tokens": usage.get("total_tokens", 0) or 0,
                     }
                 entry["duration_ms"] = resp.get("duration_ms")
-                entry["provider"] = resp.get("usage_source") or resp.get("provider")
+                entry["provider"] = _clean_text(resp.get("provider"))
+                entry["usage_source"] = _clean_text(resp.get("usage_source"))
                 entry["started_at"] = resp.get("started_at")
                 entry["ended_at"] = resp.get("ended_at")
             except (OSError, json.JSONDecodeError):
                 pass
+        if not entry.get("provider"):
+            entry["provider"] = _stage_artifact_provider(run_dir, run_payload, stage)
+        if not entry.get("provider"):
+            entry["provider"] = _clean_text(run_payload.get("provider_override"))
         results.append(entry)
     return results
 
@@ -618,3 +633,36 @@ def _resolve_artifact_path(run_dir: Path, path_text: str) -> Path:
     if path.is_absolute():
         return path
     return run_dir / path
+
+
+def _stage_artifact_provider(run_dir: Path, run_payload: dict[str, Any], stage: str) -> str | None:
+    source = STAGE_ARTIFACT_SOURCES.get(stage)
+    if source is None:
+        return None
+    path_key, fallback_filename = source
+    candidates: list[Path] = []
+    configured_path = run_payload.get(path_key)
+    if isinstance(configured_path, str) and configured_path.strip():
+        candidates.append(_resolve_artifact_path(run_dir, configured_path))
+    candidates.append(run_dir / fallback_filename)
+
+    for artifact_path in candidates:
+        if not artifact_path.exists():
+            continue
+        try:
+            payload = json.loads(artifact_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        metadata = payload.get("metadata") if isinstance(payload, dict) else None
+        if isinstance(metadata, dict):
+            provider = _clean_text(metadata.get("llm_provider"))
+            if provider:
+                return provider
+    return None
+
+
+def _clean_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None

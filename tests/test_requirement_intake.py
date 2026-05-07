@@ -14,11 +14,14 @@ from devflow.intake.analyzer import build_requirement_artifact
 from devflow.intake.lark_cli import (
     LarkCliNotFound,
     _resolve_native_exe_from_cmd_shim,
+    _deduplicated_events,
+    _extract_message_id,
     bot_message_event_command,
     event_to_source,
     fetch_doc_source,
     fetch_message_source,
     find_lark_cli_executable,
+    listen_bot_events,
     listen_bot_sources,
     run_lark_cli,
 )
@@ -319,7 +322,7 @@ class RequirementIntakeTests(unittest.TestCase):
 
     def test_cli_from_doc_defaults_to_llm_analyzer(self) -> None:
         fake_config = DevflowConfig(
-            llm=LlmConfig(provider="ark", api_key="test-api-key", model="ep-test"),
+            llm=LlmConfig(provider="ark", api_key="test-api-key", model="test-model"),
             lark=LarkConfig(cli_version="1.0.23", app_id="", app_secret="", test_doc=""),
         )
         fake_source = RequirementSource(
@@ -350,6 +353,73 @@ class RequirementIntakeTests(unittest.TestCase):
         _, kwargs = build.call_args
         self.assertEqual(kwargs["analyzer"], "llm")
         self.assertEqual(kwargs["llm_config"].model, "ep-test")
+
+
+class EventDeduplicationTests(unittest.TestCase):
+    """Tests for message_id-based event deduplication."""
+
+    def test_extract_message_id_from_nested_event(self) -> None:
+        event = {"event": {"message_id": "om_abc123", "chat_id": "oc_456"}}
+        self.assertEqual(_extract_message_id(event), "om_abc123")
+
+    def test_extract_message_id_from_message_subdict(self) -> None:
+        event = {"event": {"message": {"message_id": "om_xyz", "chat_id": "oc_1"}}}
+        self.assertEqual(_extract_message_id(event), "om_xyz")
+
+    def test_extract_message_id_from_flat_event(self) -> None:
+        event = {"message_id": "om_flat", "content": "hello"}
+        self.assertEqual(_extract_message_id(event), "om_flat")
+
+    def test_extract_message_id_returns_none_when_missing(self) -> None:
+        event = {"event": {"chat_id": "oc_1", "content": "hello"}}
+        self.assertIsNone(_extract_message_id(event))
+
+    def test_extract_message_id_open_message_id_fallback(self) -> None:
+        event = {"event": {"open_message_id": "om_open", "chat_id": "oc_1"}}
+        self.assertEqual(_extract_message_id(event), "om_open")
+
+    def test_deduplicated_events_skips_duplicate_message_id(self) -> None:
+        events = [
+            {"event": {"message_id": "om_1", "content": {"text": "first"}}},
+            {"event": {"message_id": "om_2", "content": {"text": "second"}}},
+            {"event": {"message_id": "om_1", "content": {"text": "first again"}}},
+        ]
+        result = list(_deduplicated_events(events))
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["event"]["message_id"], "om_1")
+        self.assertEqual(result[1]["event"]["message_id"], "om_2")
+
+    def test_deduplicated_events_passes_events_without_message_id(self) -> None:
+        events = [
+            {"event": {"message_id": "om_1", "content": {"text": "has id"}}},
+            {"event": {"chat_id": "oc_1", "content": {"text": "no id"}}},
+        ]
+        result = list(_deduplicated_events(events))
+        self.assertEqual(len(result), 2)
+
+    def test_deduplicated_events_uses_provided_seen_set(self) -> None:
+        seen: set[str] = {"om_seen"}
+        events = [
+            {"event": {"message_id": "om_seen", "content": {"text": "already seen"}}},
+            {"event": {"message_id": "om_new", "content": {"text": "new"}}},
+        ]
+        result = list(_deduplicated_events(events, seen_message_ids=seen))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["event"]["message_id"], "om_new")
+        self.assertIn("om_new", seen)
+
+    def test_listen_bot_events_deduplicates_with_runner(self) -> None:
+        def runner(args: list[str], timeout: int | None):
+            return [
+                {"event": {"message_id": "om_dup", "content": {"text": "first"}}},
+                {"event": {"message_id": "om_dup", "content": {"text": "duplicate"}}},
+                {"event": {"message_id": "om_unique", "content": {"text": "unique"}}},
+            ]
+
+        events = list(listen_bot_events(max_events=3, runner=runner))
+        self.assertEqual(len(events), 2)
+        message_ids = [e["event"]["message_id"] for e in events]
+        self.assertEqual(message_ids, ["om_dup", "om_unique"])
 
 
 if __name__ == "__main__":

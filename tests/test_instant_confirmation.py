@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from devflow.checkpoint import build_solution_review_checkpoint, write_checkpoint
 from devflow.intake.lark_cli import LarkCliError
-from devflow.pipeline import _idempotency_key, process_bot_event
+from devflow.pipeline import _idempotency_key, process_bot_event, maybe_run_solution_design
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[1] / ".test-tmp"
@@ -43,13 +43,13 @@ class InstantConfirmationTests(unittest.TestCase):
             replies.append((message_id, text, idempotency_key))
 
         with temp_run_dir() as temp_dir:
-            result = process_bot_event(
-                bot_event("目标：构建一键启动\n用户：产品经理\n范围：CLI"),
-                out_dir=Path(temp_dir),
-                analyzer="heuristic",
-                model="test-model",
-                reply_sender=reply_sender,
-            )
+            with patch("devflow.pipeline.maybe_run_solution_design", return_value=None):
+                result = process_bot_event(
+                    bot_event("目标：构建一键启动\n用户：产品经理\n范围：CLI"),
+                    out_dir=Path(temp_dir),
+                    reply_sender=reply_sender,
+                    build_artifact=lambda _: {"quality": {"ready_for_next_stage": True}, "metadata": {"run_id": "test"}, "normalized_requirement": {"title": "test"}},
+                )
 
         confirm_replies = [r for r in replies if "收到需求" in r[1]]
         self.assertEqual(len(confirm_replies), 1)
@@ -65,13 +65,13 @@ class InstantConfirmationTests(unittest.TestCase):
             replies.append((message_id, text, idempotency_key))
 
         with temp_run_dir() as temp_dir:
-            result = process_bot_event(
-                bot_event("目标：验证幂等键\n用户：测试\n范围：CLI"),
-                out_dir=Path(temp_dir),
-                analyzer="heuristic",
-                model="test-model",
-                reply_sender=reply_sender,
-            )
+            with patch("devflow.pipeline.maybe_run_solution_design", return_value=None):
+                result = process_bot_event(
+                    bot_event("目标：验证幂等键\n用户：测试\n范围：CLI"),
+                    out_dir=Path(temp_dir),
+                    reply_sender=reply_sender,
+                    build_artifact=lambda _: {"quality": {"ready_for_next_stage": True}, "metadata": {"run_id": "test"}, "normalized_requirement": {"title": "test"}},
+                )
 
         confirm_replies = [r for r in replies if "收到需求" in r[1]]
         expected_key = _idempotency_key(result.run_id, "confirm")
@@ -90,13 +90,13 @@ class InstantConfirmationTests(unittest.TestCase):
                 raise LarkCliError("网络超时")
 
         with temp_run_dir() as temp_dir:
-            result = process_bot_event(
-                bot_event("目标：容错测试\n用户：测试\n范围：CLI"),
-                out_dir=Path(temp_dir),
-                analyzer="heuristic",
-                model="test-model",
-                reply_sender=reply_sender,
-            )
+            with patch("devflow.pipeline.maybe_run_solution_design", return_value=None):
+                result = process_bot_event(
+                    bot_event("目标：容错测试\n用户：测试\n范围：CLI"),
+                    out_dir=Path(temp_dir),
+                    reply_sender=reply_sender,
+                    build_artifact=lambda _: {"quality": {"ready_for_next_stage": True}, "metadata": {"run_id": "test"}, "normalized_requirement": {"title": "test"}},
+                )
 
         self.assertEqual(result.status, "success")
         self.assertGreater(call_count, 1)
@@ -144,8 +144,6 @@ class InstantConfirmationTests(unittest.TestCase):
             process_bot_event(
                 bot_event(f"Approve {run_id}"),
                 out_dir=Path(temp_dir),
-                analyzer="llm",
-                model="unused-model",
                 reply_sender=reply_sender,
             )
 
@@ -197,8 +195,6 @@ class InstantConfirmationTests(unittest.TestCase):
             process_bot_event(
                 bot_event(f"Approve {run_id}"),
                 out_dir=Path(temp_dir),
-                analyzer="llm",
-                model="unused-model",
                 reply_sender=reply_sender,
             )
 
@@ -254,8 +250,6 @@ class InstantConfirmationTests(unittest.TestCase):
             result = process_bot_event(
                 bot_event(f"Approve {run_id}"),
                 out_dir=Path(temp_dir),
-                analyzer="llm",
-                model="unused-model",
                 reply_sender=reply_sender,
             )
 
@@ -265,13 +259,13 @@ class InstantConfirmationTests(unittest.TestCase):
     @patch("devflow.pipeline.send_stage_notification")
     def test_no_confirmation_when_reply_sender_is_none(self, _mock_notify) -> None:
         with temp_run_dir() as temp_dir:
-            result = process_bot_event(
-                bot_event("目标：无回复发送器\n用户：测试\n范围：CLI"),
-                out_dir=Path(temp_dir),
-                analyzer="heuristic",
-                model="test-model",
-                reply_sender=None,
-            )
+            with patch("devflow.pipeline.maybe_run_solution_design", return_value=None):
+                result = process_bot_event(
+                    bot_event("目标：无回复发送器\n用户：测试\n范围：CLI"),
+                    out_dir=Path(temp_dir),
+                    reply_sender=None,
+                    build_artifact=lambda _: {"quality": {"ready_for_next_stage": True}, "metadata": {"run_id": "test"}, "normalized_requirement": {"title": "test"}},
+                )
 
         self.assertEqual(result.status, "success")
 

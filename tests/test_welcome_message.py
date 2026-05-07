@@ -90,7 +90,7 @@ class BuildWelcomeCardTests(unittest.TestCase):
 class WelcomeMessageSkippedTests(unittest.TestCase):
     def test_skipped_when_default_chat_id_not_configured(self) -> None:
         fake_config = DevflowConfig(
-            llm=LlmConfig(provider="ark", api_key="test", model="ep-test"),
+            llm=LlmConfig(provider="ark", api_key="test", model="test-model"),
             lark=LarkConfig(cli_version="1.0.23", app_id="", app_secret="", test_doc=""),
             interaction=InteractionConfig(default_chat_id=""),
         )
@@ -126,7 +126,7 @@ class WelcomeMessageSkippedTests(unittest.TestCase):
 
     def test_guidance_includes_feishu_hint(self) -> None:
         fake_config = DevflowConfig(
-            llm=LlmConfig(provider="ark", api_key="test", model="ep-test"),
+            llm=LlmConfig(provider="ark", api_key="test", model="test-model"),
             lark=LarkConfig(cli_version="1.0.23", app_id="", app_secret="", test_doc=""),
             interaction=InteractionConfig(default_chat_id=""),
         )
@@ -146,7 +146,7 @@ class WelcomeMessageSkippedTests(unittest.TestCase):
 class WelcomeMessageSentTests(unittest.TestCase):
     def test_sent_when_default_chat_id_configured(self) -> None:
         fake_config = DevflowConfig(
-            llm=LlmConfig(provider="ark", api_key="test", model="ep-test"),
+            llm=LlmConfig(provider="ark", api_key="test", model="test-model"),
             lark=LarkConfig(cli_version="1.0.23", app_id="", app_secret="", test_doc=""),
             interaction=InteractionConfig(default_chat_id="oc_welcome_chat"),
         )
@@ -169,7 +169,7 @@ class WelcomeMessageSentTests(unittest.TestCase):
 
     def test_send_failure_does_not_crash(self) -> None:
         fake_config = DevflowConfig(
-            llm=LlmConfig(provider="ark", api_key="test", model="ep-test"),
+            llm=LlmConfig(provider="ark", api_key="test", model="test-model"),
             lark=LarkConfig(cli_version="1.0.23", app_id="", app_secret="", test_doc=""),
             interaction=InteractionConfig(default_chat_id="oc_welcome_chat"),
         )
@@ -258,7 +258,7 @@ class FirstInteractionGuideTests(unittest.TestCase):
     @patch("devflow.pipeline.send_stage_notification")
     def test_first_interaction_includes_guide_when_no_default_chat(self, _mock_notify) -> None:
         fake_config = DevflowConfig(
-            llm=LlmConfig(provider="ark", api_key="test", model="ep-test"),
+            llm=LlmConfig(provider="ark", api_key="test", model="test-model"),
             lark=LarkConfig(cli_version="1.0.23", app_id="", app_secret="", test_doc=""),
             interaction=InteractionConfig(default_chat_id=""),
         )
@@ -273,8 +273,6 @@ class FirstInteractionGuideTests(unittest.TestCase):
             process_bot_event(
                 self._bot_event("目标：首次交互测试"),
                 out_dir=_unique_out_dir(),
-                analyzer="heuristic",
-                model="test-model",
                 reply_sender=reply_sender,
             )
 
@@ -285,7 +283,7 @@ class FirstInteractionGuideTests(unittest.TestCase):
     @patch("devflow.pipeline.send_stage_notification")
     def test_second_interaction_omits_guide(self, _mock_notify) -> None:
         fake_config = DevflowConfig(
-            llm=LlmConfig(provider="ark", api_key="test", model="ep-test"),
+            llm=LlmConfig(provider="ark", api_key="test", model="test-model"),
             lark=LarkConfig(cli_version="1.0.23", app_id="", app_secret="", test_doc=""),
             interaction=InteractionConfig(default_chat_id=""),
         )
@@ -301,15 +299,11 @@ class FirstInteractionGuideTests(unittest.TestCase):
             process_bot_event(
                 self._bot_event("目标：首次\n用户：测试\n范围：CLI", message_id="om_first"),
                 out_dir=out_dir,
-                analyzer="heuristic",
-                model="test-model",
                 reply_sender=reply_sender,
             )
             process_bot_event(
                 self._bot_event("目标：第二次\n用户：测试\n范围：CLI", message_id="om_second"),
                 out_dir=out_dir,
-                analyzer="heuristic",
-                model="test-model",
                 reply_sender=reply_sender,
             )
 
@@ -321,7 +315,7 @@ class FirstInteractionGuideTests(unittest.TestCase):
     @patch("devflow.pipeline.send_stage_notification")
     def test_no_guide_when_default_chat_configured(self, _mock_notify) -> None:
         fake_config = DevflowConfig(
-            llm=LlmConfig(provider="ark", api_key="test", model="ep-test"),
+            llm=LlmConfig(provider="ark", api_key="test", model="test-model"),
             lark=LarkConfig(cli_version="1.0.23", app_id="", app_secret="", test_doc=""),
             interaction=InteractionConfig(default_chat_id="oc_default"),
         )
@@ -336,8 +330,6 @@ class FirstInteractionGuideTests(unittest.TestCase):
             process_bot_event(
                 self._bot_event("目标：有默认聊天"),
                 out_dir=_unique_out_dir(),
-                analyzer="heuristic",
-                model="test-model",
                 reply_sender=reply_sender,
             )
 
@@ -348,7 +340,7 @@ class FirstInteractionGuideTests(unittest.TestCase):
     @patch("devflow.pipeline.send_stage_notification")
     def test_no_guide_when_no_sender_id(self, _mock_notify) -> None:
         fake_config = DevflowConfig(
-            llm=LlmConfig(provider="ark", api_key="test", model="ep-test"),
+            llm=LlmConfig(provider="ark", api_key="test", model="test-model"),
             lark=LarkConfig(cli_version="1.0.23", app_id="", app_secret="", test_doc=""),
             interaction=InteractionConfig(default_chat_id=""),
         )
@@ -371,8 +363,6 @@ class FirstInteractionGuideTests(unittest.TestCase):
             process_bot_event(
                 event_no_sender,
                 out_dir=_unique_out_dir(),
-                analyzer="heuristic",
-                model="test-model",
                 reply_sender=reply_sender,
             )
 

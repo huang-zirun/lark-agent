@@ -1,0 +1,23 @@
+{
+  "id": 57455,
+  "name": "lark",
+  "abbrName": "LA",
+  "description": "",
+  "devMode": 2,
+  "status": null,
+  "url": null,
+  "databaseHost": null,
+  "databasePort": null,
+  "databaseName": null,
+  "databaseUsername": null,
+  "databasePassword": null,
+  "projectInfo": {
+    "JOYCODE": {
+      "jd_SSxUyAbonHWT": [
+        {
+          "jd_SSxUyAbonHWT": 57455
+        }
+      ]
+    }
+  }
+}

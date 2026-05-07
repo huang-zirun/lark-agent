@@ -28,6 +28,7 @@ class UserMessageQueue:
         self._result_queue: deque[Any] = deque()
         self._result_event = threading.Event()
         self._finished = False
+        self._error: BaseException | None = None
         self._active_count = 0
         self._active_zero = threading.Event()
 
@@ -47,6 +48,9 @@ class UserMessageQueue:
             try:
                 for event in self._events:
                     self._enqueue_event(event, executor)
+            except BaseException as exc:
+                with self._lock:
+                    self._error = exc
             finally:
                 while True:
                     with self._lock:
@@ -99,13 +103,14 @@ class UserMessageQueue:
                 with self._lock:
                     self._result_queue.append(result)
                 self._result_event.set()
-        except Exception:
+        except BaseException as exc:
             with self._lock:
+                self._error = exc
                 self._user_active[key] = False
                 self._active_count -= 1
                 if self._active_count == 0:
                     self._active_zero.set()
-            raise
+            self._result_event.set()
 
     def _drain(self) -> Iterator[Any]:
         while True:
@@ -121,4 +126,6 @@ class UserMessageQueue:
                 yield result
 
             if done:
+                if self._error is not None:
+                    raise self._error
                 break

@@ -42,7 +42,7 @@ from devflow.checkpoint import (
     PrefixMatchError,
     SystemCommand,
 )
-from devflow.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
+from devflow.config import DEFAULT_CONFIG_PATH, ConfigError, DevflowConfig, load_config
 from devflow.delivery.agent import build_delivery_artifact, write_delivery_artifact, write_delivery_diff
 from devflow.delivery.render import render_delivery_markdown
 from devflow.intake.analyzer import build_requirement_artifact
@@ -425,6 +425,17 @@ def _publication_url(run_payload: dict[str, Any], stage: str) -> str | None:
     return url if isinstance(url, str) and url.strip() else None
 
 
+def _publication_document_id(run_payload: dict[str, Any], stage: str) -> str | None:
+    publications = run_payload.get("artifact_publications")
+    if not isinstance(publications, dict):
+        return None
+    result = publications.get(stage)
+    if not isinstance(result, dict) or result.get("status") != "success":
+        return None
+    document_id = result.get("document_id")
+    return document_id if isinstance(document_id, str) and document_id.strip() else None
+
+
 def _reply_stage_publication(
     run_payload: dict[str, Any],
     stage: str,
@@ -435,9 +446,12 @@ def _reply_stage_publication(
     if not message_id:
         return
     url = _publication_url(run_payload, stage)
+    document_id = _publication_document_id(run_payload, stage)
     local_text = str(local_path)
     if url:
         text = f"{label}已发布：{url}\n本地产物：{local_text}"
+    elif document_id:
+        text = f"{label}已发布但暂未返回分享链接。\n文档 ID：{document_id}\n本地产物：{local_text}"
     else:
         text = f"{label}已生成，云文档发布失败或未返回链接。\n本地产物：{local_text}"
     try:
@@ -487,7 +501,7 @@ class PipelineResult:
 
 FetchSource = Callable[[str], RequirementSource]
 ReplySender = Callable[[str, str, str], Any]
-ArtifactBuilder = Callable[[RequirementSource, str, str], dict[str, Any]]
+ArtifactBuilder = Callable[[RequirementSource], dict[str, Any]]
 PrdCreator = Callable[[str, str], dict[str, Any]]
 CardReplySender = Callable[[str, dict[str, Any], str], Any]
 
@@ -513,8 +527,6 @@ def process_bot_event(
     event: dict[str, Any],
     *,
     out_dir: Path,
-    analyzer: str,
-    model: str,
     fetch_doc: FetchSource = fetch_doc_source,
     fetch_message: FetchSource = fetch_message_source,
     build_artifact: ArtifactBuilder | None = None,
@@ -624,7 +636,6 @@ def process_bot_event(
         stage_trace.event(
             "analysis_started",
             status="running",
-            payload={"analyzer": analyzer, "model": model},
         )
         send_thinking_notification(
             event_source.source_id, run_id, "requirement_intake",
@@ -633,24 +644,25 @@ def process_bot_event(
         thinking_timer.start()
         try:
             if build_artifact is None:
-                artifact = build_requirement_artifact_for_pipeline(
-                    requirement_source,
-                    analyzer,
-                    model,
-                    stage_trace=stage_trace,
-                )
+                if _should_use_heuristic_intake(event_source.content):
+                    artifact = build_requirement_artifact(requirement_source)
+                else:
+                    artifact = build_requirement_artifact_for_pipeline(
+                        requirement_source,
+                        stage_trace=stage_trace,
+                    )
             else:
-                artifact = artifact_builder(requirement_source, analyzer, model)
+                artifact = artifact_builder(requirement_source)
         except (ConfigError, LlmError, ValueError) as exc:
             stage_trace.event(
                 "analysis_failed",
                 status="failed",
-                payload={"error": str(exc), "analyzer": analyzer},
+                payload={"error": str(exc)},
             )
             raise
         finally:
             thinking_timer.cancel()
-        stage_trace.event("analysis_completed", status="success", payload={"analyzer": analyzer})
+        stage_trace.event("analysis_completed", status="success")
         write_artifact(artifact, requirement_path)
         requirement_markdown_path, _ = write_requirement_markdown(run_payload, artifact)
         stage_trace.event(
@@ -717,7 +729,7 @@ def process_bot_event(
             artifact,
             requirement_path,
             requirement_source,
-            analyzer=analyzer,
+
             run_dir=run_dir,
             stages=stages,
             trace=trace,
@@ -729,6 +741,14 @@ def process_bot_event(
             run_payload["solution_artifact"] = str(solution_path)
             run_payload["audit"] = build_audit_payload(trace, run_dir)
         if run_payload.get("status") == "blocked":
+            publish_requirement_prd(
+                run_payload,
+                artifact,
+                event_source.source_id,
+                prd_creator=prd_creator,
+                card_reply_sender=card_reply_sender,
+                stage_trace=stage_trace,
+            )
             stage_trace.event("run_blocked", status="blocked")
             reply_text = build_workspace_blocked_reply(run_payload)
         else:
@@ -763,6 +783,7 @@ def process_bot_event(
         run_payload.update(
             {
                 "status": "failed",
+                "lifecycle_status": "failed",
                 "ended_at": ended_at,
                 "error": {
                     "stage": failed_stage,
@@ -780,11 +801,15 @@ def process_bot_event(
         )
         reply_text = build_failure_reply(run_payload)
 
+    sync_run_lifecycle(run_payload)
     _update_session_from_result(session, chat_id, sender_id, run_id, run_payload)
     write_json(run_path, run_payload)
 
     sender = send_bot_reply if reply_sender is None else reply_sender
-    should_send_text_reply = run_payload["status"] != "success" or run_payload.get("reply_error") is not None
+    should_send_text_reply = (
+        run_payload["status"] in {"failed", "blocked"}
+        or run_payload.get("reply_error") is not None
+    )
     if sender is not None and should_send_text_reply:
         try:
             stage_trace.event("reply_attempted", status="running")
@@ -805,7 +830,7 @@ def process_bot_event(
         status=run_payload["status"],
         run_dir=run_dir,
         run_path=run_path,
-        requirement_path=requirement_path if run_payload["status"] == "success" else None,
+        requirement_path=requirement_path if run_payload["status"] not in {"failed"} else None,
         solution_path=Path(run_payload["solution_artifact"]) if run_payload.get("solution_artifact") else None,
         reply_error=reply_error or run_payload.get("reply_error"),
     )
@@ -816,7 +841,6 @@ def maybe_run_solution_design(
     requirement_path: Path,
     requirement_source: RequirementSource,
     *,
-    analyzer: str,
     run_dir: Path,
     stages: list[dict[str, Any]],
     trace: RunTrace,
@@ -824,8 +848,6 @@ def maybe_run_solution_design(
     message_id: str,
     card_reply_sender: CardReplySender | None,
 ) -> Path | None:
-    if analyzer != "llm":
-        return None
 
     config = load_config(require_llm_api_key=True, require_llm_model=True)
     solution_trace = trace.stage("solution_design")
@@ -854,13 +876,13 @@ def maybe_run_solution_design(
         run_payload.update(
             {
                 "status": "blocked",
-                "ended_at": ended_at,
                 "stages": stages,
                 "checkpoint_artifact": str(checkpoint_path),
                 "checkpoint_status": checkpoint["status"],
                 "checkpoint_blocked_reason": str(exc),
             }
         )
+        sync_run_lifecycle(run_payload)
         solution_trace.event(
             "workspace_resolution_blocked",
             status="blocked",
@@ -868,12 +890,46 @@ def maybe_run_solution_design(
         )
         return None
 
+    return _execute_solution_design_stage(
+        requirement_artifact,
+        requirement_path,
+        workspace,
+        config,
+        run_dir=run_dir,
+        stages=stages,
+        trace=trace,
+        run_payload=run_payload,
+        message_id=message_id,
+        card_reply_sender=card_reply_sender,
+        event_source=requirement_source,
+    )
+
+
+def _execute_solution_design_stage(
+    requirement_artifact: dict[str, Any],
+    requirement_path: Path,
+    workspace: dict[str, Any],
+    config: DevflowConfig,
+    *,
+    run_dir: Path,
+    stages: list[dict[str, Any]],
+    trace: RunTrace,
+    run_payload: dict[str, Any],
+    message_id: str,
+    card_reply_sender: CardReplySender | None,
+    event_source: RequirementSource | None,
+) -> Path:
+    solution_trace = trace.stage("solution_design")
     started_at = utc_now()
+    archive_existing_checkpoint(run_payload, run_dir)
+    clear_blocked_solution_state(run_payload)
     set_stage_status(stages, "solution_design", "running", started_at=started_at)
     send_stage_notification(
         message_id, run_payload["run_id"], "solution_design", "started", stages,
     )
+    run_payload["status"] = "running"
     run_payload["stages"] = stages
+    write_json(run_dir / "run.json", run_payload)
     solution_trace.event("workspace_resolved", status="success", payload=workspace)
     solution_path = run_dir / "solution.json"
     try:
@@ -921,11 +977,17 @@ def maybe_run_solution_design(
         send_stage_notification(
             message_id, run_payload["run_id"], "solution_design", "completed", stages,
         )
+        run_payload["status"] = "success"
+        run_payload["solution_artifact"] = str(solution_path)
         run_payload["solution_title"] = artifact["proposed_solution"]["summary"]
         run_payload["solution_markdown"] = str(solution_markdown_path)
         run_payload["checkpoint_artifact"] = str(checkpoint_path)
         run_payload["checkpoint_status"] = checkpoint["status"]
+        run_payload["checkpoint_stage"] = checkpoint["stage"]
         run_payload["stages"] = stages
+        run_payload["audit"] = build_audit_payload(trace, run_dir)
+        sync_run_lifecycle(run_payload)
+        write_json(run_dir / "run.json", run_payload)
         publish_solution_review_checkpoint(
             run_payload,
             artifact,
@@ -934,8 +996,10 @@ def maybe_run_solution_design(
             message_id=message_id,
             card_reply_sender=card_reply_sender,
             stage_trace=solution_trace,
-            event_source=requirement_source,
+            event_source=event_source,
         )
+        sync_run_lifecycle(run_payload)
+        write_json(run_dir / "run.json", run_payload)
         return solution_path
     except (LlmError, ValueError) as exc:
         ended_at = utc_now()
@@ -949,7 +1013,18 @@ def maybe_run_solution_design(
         send_stage_notification(
             message_id, run_payload["run_id"], "solution_design", "failed", stages, error_summary=str(exc),
         )
+        run_payload["status"] = "failed"
+        run_payload["lifecycle_status"] = "failed"
+        run_payload["ended_at"] = ended_at
+        run_payload["error"] = {
+            "stage": "solution_design",
+            "message": str(exc),
+            "hint": "检查 LLM 配置和 API Key 是否有效。",
+        }
+        run_payload["stages"] = stages
+        run_payload["audit"] = build_audit_payload(trace, run_dir)
         solution_trace.event("solution_design_failed", status="failed", payload={"error": str(exc)})
+        write_json(run_dir / "run.json", run_payload)
         raise
 
 
@@ -988,6 +1063,7 @@ def publish_solution_review_checkpoint(
         approval_cfg.enabled
         and event_source is not None
         and event_source.metadata.get("sender_id")
+        and _can_attempt_external_approval(run_payload, stage_trace, "approval_creation_skipped")
     ):
         try:
             stage_trace.event("approval_creation_attempted", status="running")
@@ -1004,6 +1080,7 @@ def publish_solution_review_checkpoint(
             return
         except (ApprovalError, ConfigError, LarkCliError) as exc:
             stage_trace.event("approval_creation_failed", status="failed", payload={"error": str(exc)})
+            _mark_external_approval_unavailable(exc, run_payload, stage_trace)
             # Fall through to card-based fallback
 
     # Fallback: interactive card with text commands
@@ -1028,6 +1105,7 @@ def publish_solution_review_checkpoint(
         run_payload["checkpoint_publication"] = {"status": "failed", "error": str(exc), "channel": "card"}
         run_payload["reply_error"] = str(exc)
         stage_trace.event("solution_review_card_failed", status="failed", payload={"error": str(exc)})
+    sync_run_lifecycle(run_payload)
 
 
 def _publish_via_external_approval(
@@ -1093,6 +1171,7 @@ def _publish_via_external_approval(
     run_payload["approval_instance_code"] = instance_id
     run_payload["approval_code"] = approval_code
     run_payload["checkpoint_publication"] = {"status": "success", "channel": "external_approval"}
+    sync_run_lifecycle(run_payload)
     stage_trace.event("approval_creation_completed", status="success", payload={"instance_id": instance_id, "approval_code": approval_code})
 
     # Notify user via IM
@@ -1223,6 +1302,110 @@ ACTIVE_STATUSES = frozenset({
     "waiting_approval_with_warnings",
     "waiting_clarification",
 })
+
+TERMINAL_RUN_STATUSES = frozenset({"failed", "delivered", "terminated"})
+WAITING_CHECKPOINT_STATUSES = frozenset({"waiting_approval", "waiting_approval_with_warnings"})
+_EXTERNAL_APPROVAL_UNAVAILABLE_REASON: str | None = None
+
+
+def sync_run_lifecycle(run_payload: dict[str, Any]) -> dict[str, Any]:
+    status = str(run_payload.get("status") or "")
+    checkpoint_status = str(run_payload.get("checkpoint_status") or "")
+    if status in TERMINAL_RUN_STATUSES:
+        run_payload["lifecycle_status"] = status
+        return run_payload
+    if _delivery_stage_status(run_payload) == "success":
+        run_payload["status"] = "delivered"
+        run_payload["lifecycle_status"] = "delivered"
+        if not run_payload.get("ended_at"):
+            run_payload["ended_at"] = utc_now()
+        return run_payload
+    if checkpoint_status in WAITING_CHECKPOINT_STATUSES:
+        run_payload["status"] = "waiting_approval"
+        run_payload["lifecycle_status"] = "waiting_approval"
+        run_payload["ended_at"] = None
+        return run_payload
+    if checkpoint_status == "blocked" or _stage_status_from_payload(run_payload, "solution_design") == "blocked":
+        run_payload["status"] = "blocked"
+        run_payload["lifecycle_status"] = "blocked"
+        run_payload["ended_at"] = None
+        return run_payload
+    if status in {"running", "waiting_clarification", "awaiting_reject_reason"}:
+        run_payload["lifecycle_status"] = status
+        run_payload["ended_at"] = None
+    return run_payload
+
+
+def clear_blocked_solution_state(run_payload: dict[str, Any]) -> None:
+    run_payload.pop("checkpoint_blocked_reason", None)
+    if isinstance(run_payload.get("error"), dict) and run_payload["error"].get("stage") == "solution_design":
+        run_payload["error"] = None
+    stages = run_payload.get("stages") if isinstance(run_payload.get("stages"), list) else []
+    for stage in stages:
+        if isinstance(stage, dict) and stage.get("name") == "solution_design":
+            stage.pop("error", None)
+
+
+def archive_existing_checkpoint(run_payload: dict[str, Any], run_dir: Path) -> None:
+    checkpoint_path = run_dir / "checkpoint.json"
+    if not checkpoint_path.exists():
+        return
+    try:
+        previous = json.loads(checkpoint_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return
+    history = run_payload.get("checkpoint_history") if isinstance(run_payload.get("checkpoint_history"), list) else []
+    if history and history[-1] == previous:
+        return
+    history.append(previous)
+    run_payload["checkpoint_history"] = history
+
+
+def external_approval_unavailable_reason() -> str | None:
+    return _EXTERNAL_APPROVAL_UNAVAILABLE_REASON
+
+
+def _can_attempt_external_approval(run_payload: dict[str, Any], stage_trace: StageTrace, event_name: str) -> bool:
+    reason = external_approval_unavailable_reason()
+    if not reason:
+        return True
+    run_payload["external_approval_unavailable"] = {"reason": reason}
+    stage_trace.event(event_name, status="skipped", payload={"reason": reason})
+    return False
+
+
+def _mark_external_approval_unavailable(exc: Exception, run_payload: dict[str, Any], stage_trace: StageTrace) -> bool:
+    reason = _approval_capability_error_reason(exc)
+    if reason is None:
+        return False
+    global _EXTERNAL_APPROVAL_UNAVAILABLE_REASON
+    _EXTERNAL_APPROVAL_UNAVAILABLE_REASON = reason
+    run_payload["external_approval_unavailable"] = {"reason": reason}
+    stage_trace.event("external_approval_capability_unavailable", status="skipped", payload={"reason": reason})
+    return True
+
+
+def _approval_capability_error_reason(exc: Exception) -> str | None:
+    message = str(exc)
+    markers = ("approval:approval", "approval:external_approval", "99991672", "Permission denied")
+    if any(marker in message for marker in markers):
+        return (
+            "External approval capability is unavailable. Missing approval scopes "
+            "(approval:approval or approval:external_approval); using card fallback."
+        )
+    return None
+
+
+def _delivery_stage_status(run_payload: dict[str, Any]) -> str:
+    return _stage_status_from_payload(run_payload, "delivery")
+
+
+def _stage_status_from_payload(run_payload: dict[str, Any], name: str) -> str:
+    stages = run_payload.get("stages") if isinstance(run_payload.get("stages"), list) else []
+    for stage in stages:
+        if isinstance(stage, dict) and stage.get("name") == name:
+            return str(stage.get("status") or "")
+    return ""
 
 
 def _find_active_runs(
@@ -1425,72 +1608,65 @@ def resume_blocked_solution_design(
     config = load_config(require_llm_api_key=True, require_llm_model=True)
     workspace = resolve_workspace(message_text=event_source.content, config=config.workspace)
     trace = RunTrace(run_payload["run_id"], run_dir)
-    solution_trace = trace.stage("solution_design")
-    started_at = utc_now()
-    set_stage_status(run_payload["stages"], "solution_design", "running", started_at=started_at)
-    solution_path = run_dir / "solution.json"
-    solution_markdown_path = run_dir / "solution.md"
-    artifact = build_solution_design_artifact(
-        requirement,
-        workspace,
-        config.llm,
-        requirement_path=requirement_path,
-        stage_trace=solution_trace,
-        reference_config=config.reference,
-    )
-    write_solution_artifact(artifact, solution_path)
-    solution_markdown_path.write_text(
-        render_solution_markdown(artifact, run_id=run_payload["run_id"]),
-        encoding="utf-8",
-    )
-    checkpoint = build_solution_review_checkpoint(run_payload, solution_path, solution_markdown_path)
-    checkpoint_path = write_checkpoint(run_dir, checkpoint)
-    set_stage_status(
-        run_payload["stages"],
-        "solution_design",
-        "success",
-        ended_at=utc_now(),
-        artifact=str(solution_path),
-    )
-    run_payload["status"] = "success"
-    run_payload["solution_artifact"] = str(solution_path)
-    run_payload["solution_markdown"] = str(solution_markdown_path)
-    run_payload["solution_title"] = artifact["proposed_solution"]["summary"]
-    run_payload["checkpoint_artifact"] = str(checkpoint_path)
-    run_payload["checkpoint_status"] = checkpoint["status"]
-    write_json(run_dir / "run.json", run_payload)
-    publish_solution_review_checkpoint(
-        run_payload,
-        artifact,
-        solution_path=solution_path,
-        solution_markdown_path=solution_markdown_path,
-        message_id=event_source.source_id,
-        card_reply_sender=card_reply_sender,
-        stage_trace=solution_trace,
-    )
-    write_json(run_dir / "run.json", run_payload)
+    try:
+        solution_path = _execute_solution_design_stage(
+            requirement,
+            requirement_path,
+            workspace,
+            config,
+            run_dir=run_dir,
+            stages=run_payload["stages"],
+            trace=trace,
+            run_payload=run_payload,
+            message_id=event_source.source_id,
+            card_reply_sender=card_reply_sender,
+            event_source=event_source,
+        )
+    except (LlmError, ValueError):
+        sender = send_bot_reply if reply_sender is None else reply_sender
+        if sender is not None:
+            try:
+                sender(
+                    event_source.source_id,
+                    build_failure_reply(load_run_payload(run_dir)),
+                    _idempotency_key(run_payload["run_id"], "checkpoint-resume-failed"),
+                )
+            except LarkCliError as exc:
+                failed_payload = load_run_payload(run_dir)
+                failed_payload["reply_error"] = str(exc)
+                write_json(run_dir / "run.json", failed_payload)
+        failed_payload = load_run_payload(run_dir)
+        return PipelineResult(
+            failed_payload["run_id"],
+            "failed",
+            run_dir,
+            run_dir / "run.json",
+            requirement_path,
+            None,
+            reply_error=failed_payload.get("reply_error"),
+        )
+    updated_payload = load_run_payload(run_dir)
+    solution_markdown_path = Path(updated_payload["solution_markdown"])
     sender = send_bot_reply if reply_sender is None else reply_sender
     if sender is not None:
-        card_note = "（卡片发送失败，请查看 artifacts 获取详情）" if run_payload.get("reply_error") else ""
+        card_note = "（卡片发送失败，请查看 artifacts 获取详情）" if updated_payload.get("reply_error") else ""
         try:
             sender(
                 event_source.source_id,
                 f"已补充仓库上下文并生成技术方案：{solution_markdown_path}{card_note}",
-                _idempotency_key(run_payload['run_id'], "checkpoint-resume"),
+                _idempotency_key(updated_payload['run_id'], "checkpoint-resume"),
             )
         except LarkCliError as exc:
-            run_payload["reply_error"] = str(exc)
-            write_json(run_dir / "run.json", run_payload)
+            updated_payload["reply_error"] = str(exc)
+            write_json(run_dir / "run.json", updated_payload)
     return PipelineResult(
-        run_payload["run_id"],
+        updated_payload["run_id"],
         "waiting_approval",
         run_dir,
         run_dir / "run.json",
         requirement_path,
         solution_path,
     )
-
-
 def approve_checkpoint_run(
     event_source: RequirementSource,
     run_dir: Path,
@@ -1542,6 +1718,8 @@ def approve_checkpoint_run(
         )
     _sync_approval_instance_if_needed(run_dir, checkpoint, "APPROVED")
     run_payload = load_run_payload(run_dir)
+    run_payload["status"] = "running"
+    run_payload["lifecycle_status"] = "running"
     run_payload["checkpoint_status"] = checkpoint["status"]
     run_payload["checkpoint_artifact"] = str(run_dir / "checkpoint.json")
     write_json(run_dir / "run.json", run_payload)
@@ -1648,7 +1826,7 @@ def run_code_generation_after_approval(run_dir: Path, run_payload: dict[str, Any
         send_stage_notification(
             _trigger_message_id(run_payload), run_payload["run_id"], "code_generation", "completed", run_payload["stages"],
         )
-        run_payload["status"] = "success"
+        run_payload["status"] = "running"
         run_payload["code_generation_artifact"] = str(code_path)
         run_payload["code_generation_markdown"] = str(code_markdown_path)
         run_payload["code_diff"] = str(diff_path)
@@ -1704,6 +1882,8 @@ def run_code_generation_after_approval(run_dir: Path, run_payload: dict[str, Any
             _trigger_message_id(run_payload), run_payload["run_id"], "code_generation", "failed", run_payload["stages"], error_summary=str(exc),
         )
         run_payload["status"] = "failed"
+        run_payload["lifecycle_status"] = "failed"
+        run_payload["ended_at"] = ended_at
         run_payload["error"] = {"stage": "code_generation", "message": str(exc)}
         run_payload["audit"] = build_audit_payload(trace, run_dir)
         stage_trace.event("code_generation_failed", status="failed", payload={"error": str(exc)})
@@ -1775,7 +1955,7 @@ def run_test_generation_after_code_generation(run_dir: Path, run_payload: dict[s
         send_stage_notification(
             _trigger_message_id(run_payload), run_payload["run_id"], "test_generation", "completed", run_payload["stages"],
         )
-        run_payload["status"] = "success"
+        run_payload["status"] = "running"
         run_payload["test_generation_artifact"] = str(test_path)
         run_payload["test_generation_markdown"] = str(test_markdown_path)
         run_payload["test_diff"] = str(diff_path)
@@ -1808,6 +1988,8 @@ def run_test_generation_after_code_generation(run_dir: Path, run_payload: dict[s
             _trigger_message_id(run_payload), run_payload["run_id"], "test_generation", "failed", run_payload["stages"], error_summary=str(exc),
         )
         run_payload["status"] = "failed"
+        run_payload["lifecycle_status"] = "failed"
+        run_payload["ended_at"] = ended_at
         run_payload["error"] = {"stage": "test_generation", "message": str(exc)}
         run_payload["audit"] = build_audit_payload(trace, run_dir)
         stage_trace.event("test_generation_failed", status="failed", payload={"error": str(exc)})
@@ -1888,7 +2070,7 @@ def run_code_review_after_test_generation(
         send_stage_notification(
             _trigger_message_id(run_payload), run_payload["run_id"], "code_review", "completed", run_payload["stages"],
         )
-        run_payload["status"] = "success"
+        run_payload["status"] = "running"
         run_payload["code_review_artifact"] = str(review_path)
         run_payload["code_review_markdown"] = str(review_markdown_path)
         run_payload["code_review_summary"] = artifact.get("summary")
@@ -1911,6 +2093,7 @@ def run_code_review_after_test_generation(
             review_markdown_path=review_markdown_path,
             stage_trace=stage_trace,
         )
+        sync_run_lifecycle(run_payload)
         write_json(run_dir / "run.json", run_payload)
         return review_path
     except (ConfigError, LlmError, ValueError) as exc:
@@ -1926,6 +2109,8 @@ def run_code_review_after_test_generation(
             _trigger_message_id(run_payload), run_payload["run_id"], "code_review", "failed", run_payload["stages"], error_summary=str(exc),
         )
         run_payload["status"] = "failed"
+        run_payload["lifecycle_status"] = "failed"
+        run_payload["ended_at"] = ended_at
         run_payload["error"] = {"stage": "code_review", "message": str(exc)}
         run_payload["audit"] = build_audit_payload(trace, run_dir)
         stage_trace.event("code_review_failed", status="failed", payload={"error": str(exc)})
@@ -2076,6 +2261,8 @@ def run_delivery_after_code_review_approval(
             _trigger_message_id(run_payload), run_payload["run_id"], "delivery", "completed", run_payload["stages"],
         )
         run_payload["status"] = "delivered"
+        run_payload["lifecycle_status"] = "delivered"
+        run_payload["ended_at"] = ended_at
         run_payload["delivery_artifact"] = str(delivery_path)
         run_payload["delivery_markdown"] = str(delivery_markdown_path)
         run_payload["delivery_diff"] = str(delivery_diff_path)
@@ -2097,6 +2284,7 @@ def run_delivery_after_code_review_approval(
             status="success",
             payload={"path": str(delivery_path), "schema_version": artifact.get("schema_version")},
         )
+        sync_run_lifecycle(run_payload)
         write_json(run_dir / "run.json", run_payload)
         return delivery_path
     except (OSError, json.JSONDecodeError, ValueError) as exc:
@@ -2106,6 +2294,8 @@ def run_delivery_after_code_review_approval(
             _trigger_message_id(run_payload), run_payload["run_id"], "delivery", "failed", run_payload["stages"], error_summary=str(exc),
         )
         run_payload["status"] = "failed"
+        run_payload["lifecycle_status"] = "failed"
+        run_payload["ended_at"] = ended_at
         run_payload["error"] = {"stage": "delivery", "message": str(exc)}
         run_payload["audit"] = build_audit_payload(trace, run_dir)
         stage_trace.event("delivery_failed", status="failed", payload={"error": str(exc)})
@@ -2203,6 +2393,7 @@ def _publish_code_review_via_external_approval(
     run_payload["approval_instance_code"] = instance_id
     run_payload["approval_code"] = approval_code
     run_payload["checkpoint_publication"] = {"status": "success", "channel": "external_approval"}
+    sync_run_lifecycle(run_payload)
     stage_trace.event("code_review_approval_creation_completed", status="success", payload={"instance_id": instance_id, "approval_code": approval_code})
 
     message_id = str((run_payload.get("trigger") or {}).get("message_id") or "")
@@ -2279,7 +2470,11 @@ def publish_code_review_checkpoint(
         run_payload["review_doc_publish_error"] = str(exc)
         stage_trace.event("review_doc_publish_failed", status="failed", payload={"error": str(exc)})
 
-    if approval_cfg.enabled and sender_id:
+    if approval_cfg.enabled and sender_id and _can_attempt_external_approval(
+        run_payload,
+        stage_trace,
+        "code_review_approval_creation_skipped",
+    ):
         try:
             stage_trace.event("code_review_approval_creation_attempted", status="running")
             _publish_code_review_via_external_approval(
@@ -2294,26 +2489,29 @@ def publish_code_review_checkpoint(
             return
         except (ApprovalError, ConfigError, LarkCliError) as exc:
             stage_trace.event("code_review_approval_creation_failed", status="failed", payload={"error": str(exc)})
+            _mark_external_approval_unavailable(exc, run_payload, stage_trace)
 
-    if card_reply_sender is not None:
+    # Fallback: interactive card with text commands (mirrors solution_review logic)
+    card_sender = send_bot_card_reply if card_reply_sender is None else card_reply_sender
+    message_id = str((run_payload.get("trigger") or {}).get("message_id") or "")
+    if message_id:
         try:
-            message_id = str((run_payload.get("trigger") or {}).get("message_id") or "")
-            if message_id:
-                card = build_code_review_card(
-                    run_payload,
-                    review_artifact,
-                    review_path=review_path,
-                    review_markdown_path=review_markdown_path,
-                    review_doc_url=review_doc_url,
-                )
-                stage_trace.event("code_review_card_attempted", status="running")
-                card_reply_sender(message_id, card, _idempotency_key(run_payload["run_id"], "code-review"))
-                run_payload["checkpoint_publication"] = {"status": "success", "channel": "card"}
-                stage_trace.event("code_review_card_completed", status="success")
+            card = build_code_review_card(
+                run_payload,
+                review_artifact,
+                review_path=review_path,
+                review_markdown_path=review_markdown_path,
+                review_doc_url=review_doc_url,
+            )
+            stage_trace.event("code_review_card_attempted", status="running")
+            card_sender(message_id, card, _idempotency_key(run_payload["run_id"], "code-review"))
+            run_payload["checkpoint_publication"] = {"status": "success", "channel": "card"}
+            stage_trace.event("code_review_card_completed", status="success")
         except Exception as exc:
             run_payload["checkpoint_publication"] = {"status": "failed", "error": str(exc), "channel": "card"}
             run_payload["reply_error"] = str(exc)
             stage_trace.event("code_review_card_failed", status="failed", payload={"error": str(exc)})
+    sync_run_lifecycle(run_payload)
 
 
 def reject_checkpoint_run(
@@ -2332,8 +2530,10 @@ def reject_checkpoint_run(
             reviewer=reviewer_from_event(event_source),
         )
         run_payload = load_run_payload(run_dir)
+        run_payload["status"] = "awaiting_reject_reason"
         run_payload["checkpoint_status"] = checkpoint["status"]
         run_payload["checkpoint_artifact"] = str(run_dir / "checkpoint.json")
+        sync_run_lifecycle(run_payload)
         write_json(run_dir / "run.json", run_payload)
         sender = send_bot_reply if reply_sender is None else reply_sender
         if sender is not None:
@@ -2359,6 +2559,7 @@ def reject_checkpoint_run(
             run_payload["checkpoint_artifact"] = str(run_dir / "checkpoint.json")
             run_payload["status"] = "blocked"
             run_payload["error"] = {"stage": "code_review", "message": reason}
+            sync_run_lifecycle(run_payload)
             write_json(run_dir / "run.json", run_payload)
             return PipelineResult(run_payload["run_id"], "rejected", run_dir, run_dir / "run.json", None)
         feedback = {
@@ -2448,12 +2649,14 @@ def rerun_solution_design_after_reject(
         ended_at=utc_now(),
         artifact=str(solution_path),
     )
-    run_payload["status"] = "success"
+    run_payload["status"] = "running"
     run_payload["solution_artifact"] = str(solution_path)
     run_payload["solution_markdown"] = str(solution_markdown_path)
     run_payload["solution_title"] = artifact["proposed_solution"]["summary"]
     run_payload["checkpoint_artifact"] = str(checkpoint_path)
     run_payload["checkpoint_status"] = next_checkpoint["status"]
+    run_payload["checkpoint_stage"] = next_checkpoint["stage"]
+    sync_run_lifecycle(run_payload)
     write_json(run_dir / "run.json", run_payload)
     publish_solution_review_checkpoint(
         run_payload,
@@ -2464,6 +2667,7 @@ def rerun_solution_design_after_reject(
         card_reply_sender=card_reply_sender,
         stage_trace=solution_trace,
     )
+    sync_run_lifecycle(run_payload)
     write_json(run_dir / "run.json", run_payload)
     sender = send_bot_reply if reply_sender is None else reply_sender
     if sender is not None:
@@ -2549,7 +2753,13 @@ def publish_requirement_prd(
 
 
 def write_requirement_markdown(run_payload: dict[str, Any], artifact: dict[str, Any]) -> tuple[Path, str]:
-    run_dir = Path(run_payload["run_dir"])
+    run_dir_value = run_payload.get("run_dir")
+    if run_dir_value:
+        run_dir = Path(str(run_dir_value))
+    elif run_payload.get("run_path"):
+        run_dir = Path(str(run_payload["run_path"])).parent
+    else:
+        run_dir = Path(str(run_payload["requirement_artifact"])).parent
     markdown_path = run_dir / "requirement.md"
     markdown = render_prd_markdown(artifact, run_id=run_payload["run_id"])
     markdown_path.write_text(markdown, encoding="utf-8")
@@ -2609,8 +2819,6 @@ def run_start_loop(
     out_dir: Path,
     once: bool,
     timeout_seconds: int | None,
-    analyzer: str,
-    model: str,
 ) -> int:
     _send_welcome_message()
     config = load_config()
@@ -2662,8 +2870,6 @@ def run_start_loop(
         return process_bot_event(
             event,
             out_dir=out_dir,
-            analyzer=analyzer,
-            model=model,
             session=session,
         )
 
@@ -2721,20 +2927,25 @@ def resolve_detected_source(
 
 def build_requirement_artifact_for_pipeline(
     source: RequirementSource,
-    analyzer: str,
-    model: str,
     *,
     stage_trace: StageTrace | None = None,
 ) -> dict[str, Any]:
-    if analyzer == "heuristic":
-        return build_requirement_artifact(source, model=model, analyzer="heuristic")
-    config = load_config(require_llm_api_key=True, require_llm_model=True)
+    try:
+        config = load_config(require_llm_api_key=True, require_llm_model=True)
+    except ConfigError:
+        return build_requirement_artifact(source)
     return build_requirement_artifact(
         source,
         analyzer="llm",
         llm_config=config.llm,
         stage_trace=stage_trace,
     )
+
+
+def _should_use_heuristic_intake(message_text: str) -> bool:
+    if parse_workspace_directive(message_text) is not None:
+        return False
+    return bool(re.search(r"^\s*(?:目标|用户|范围|背景|问题|验收)\s*[:：]", message_text, re.MULTILINE))
 
 
 def build_audit_payload(trace: RunTrace, run_dir: Path) -> dict[str, Any]:
@@ -2879,7 +3090,8 @@ def resume_from_clarification(
     checkpoint["updated_at"] = utc_now()
     write_checkpoint(run_dir, checkpoint)
 
-    run_payload["status"] = "success"
+    run_payload["status"] = "running"
+    run_payload["lifecycle_status"] = "running"
     run_payload["checkpoint_artifact"] = str(run_dir / "checkpoint.json")
     run_payload["checkpoint_status"] = checkpoint["status"]
     run_payload["ready_for_next_stage"] = True
@@ -2918,7 +3130,6 @@ def resume_from_clarification(
         requirement,
         requirement_path,
         requirement_source,
-        analyzer="llm",
         run_dir=run_dir,
         stages=run_payload["stages"],
         trace=trace,
@@ -2928,6 +3139,7 @@ def resume_from_clarification(
     )
     if solution_path is not None:
         run_payload["solution_artifact"] = str(solution_path)
+    sync_run_lifecycle(run_payload)
     write_json(run_dir / "run.json", run_payload)
 
     return PipelineResult(
@@ -3176,10 +3388,16 @@ def build_success_reply(run_payload: dict[str, Any]) -> str:
     ]
     publication = run_payload.get("publication")
     if isinstance(publication, dict) and publication.get("status") == "failed":
-        lines.append("PRD 发布：失败，已记录到 run.json。")
-        prd = publication.get("prd")
-        if isinstance(prd, dict) and prd.get("document_id"):
-            lines.append(f"PRD 文档 ID：{prd['document_id']}")
+        req_publication = run_payload.get("artifact_publications", {}).get("requirement_intake")
+        if isinstance(req_publication, dict) and req_publication.get("status") == "success":
+            lines.append("PRD 发布：已完成，卡片回复失败已记录到 run.json。")
+            if req_publication.get("document_id"):
+                lines.append(f"PRD 文档 ID：{req_publication['document_id']}")
+        else:
+            lines.append("PRD 发布：失败，已记录到 run.json。")
+            prd = publication.get("prd")
+            if isinstance(prd, dict) and prd.get("document_id"):
+                lines.append(f"PRD 文档 ID：{prd['document_id']}")
     if run_payload.get("solution_artifact"):
         lines.append(f"技术方案：{run_payload['solution_artifact']}")
     return "\n".join(lines)

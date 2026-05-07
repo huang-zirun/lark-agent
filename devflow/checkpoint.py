@@ -328,7 +328,7 @@ def build_solution_review_card(
     doc_link_line = (
         f"[查看完整方案]({solution_doc_url})"
         if solution_doc_url
-        else f"完整方案文档发布失败，请查看本地产物：`{solution_markdown_path_text}`"
+        else f"完整方案文档暂未返回分享链接，请查看本地产物：`{solution_markdown_path_text}`"
     )
     body = "\n".join(
         [
@@ -394,7 +394,7 @@ def build_code_review_card(
     doc_link_line = (
         f"[查看完整评审报告]({review_doc_url})"
         if review_doc_url
-        else f"完整评审报告发布失败，请查看本地产物：`{review_markdown_path_text}`"
+        else f"完整评审报告暂未返回分享链接，请查看本地产物：`{review_markdown_path_text}`"
     )
     approval_hint = "\n也可在飞书「审批」应用中处理。" if has_approval_instance else ""
     body = "\n".join(

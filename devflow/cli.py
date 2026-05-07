@@ -49,9 +49,11 @@ from devflow.test.agent import (
     write_test_generation_artifact,
 )
 
-
 DEFAULT_MODEL = "heuristic-local-v1"
 DEFAULT_ANALYZER = "llm"
+
+
+
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -81,13 +83,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="artifacts/runs",
         help="流水线运行产物目录。",
     )
-    start.add_argument("--model", default=DEFAULT_MODEL, help="分析器模型标签。")
     start.add_argument(
         "--analyzer",
-        choices=("llm", "heuristic"),
-        default=DEFAULT_ANALYZER,
-        help="需求分析器后端。",
+        choices=["heuristic", "llm"],
+        default=None,
+        help="兼容旧入口；当前流水线会根据配置选择需求分析方式。",
     )
+
     start.add_argument("--provider", default=None, help="覆盖 config.json 中的 LLM Provider。")
     start.set_defaults(handler=handle_start)
 
@@ -197,6 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_ANALYZER,
         help="需求分析器后端。",
     )
+
     from_doc.set_defaults(handler=handle_from_doc)
 
     from_message = intake_subparsers.add_parser(
@@ -212,6 +215,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_ANALYZER,
         help="需求分析器后端。",
     )
+
     from_message.set_defaults(handler=handle_from_message)
 
     listen_bot = intake_subparsers.add_parser(
@@ -231,13 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="等待事件的最长秒数。",
     )
     listen_bot.add_argument("--out-dir", required=True, help="输出目录。")
-    listen_bot.add_argument("--model", default=DEFAULT_MODEL, help="分析器模型标签。")
-    listen_bot.add_argument(
-        "--analyzer",
-        choices=("llm", "heuristic"),
-        default=DEFAULT_ANALYZER,
-        help="需求分析器后端。",
-    )
+
     listen_bot.set_defaults(handler=handle_listen_bot)
 
     doctor = intake_subparsers.add_parser(
@@ -295,8 +293,6 @@ def handle_start(args: argparse.Namespace) -> int:
         out_dir=Path(args.out_dir),
         once=args.once,
         timeout_seconds=args.timeout,
-        analyzer=args.analyzer,
-        model=args.model,
     )
     return 0
 
@@ -626,6 +622,17 @@ def handle_doctor(args: argparse.Namespace) -> int:
     print(f"LLM 基础 URL 主机：{base_url_host(config.llm)}")
     print(f"lark-cli 可执行文件：{executable}")
     print(f"lark-cli 版本：{version}")
+    if config.approval.enabled:
+        try:
+            from devflow.pipeline import external_approval_unavailable_reason
+
+            unavailable_reason = external_approval_unavailable_reason()
+        except Exception:
+            unavailable_reason = None
+        if unavailable_reason:
+            print(f"外部审批能力：不可用，{unavailable_reason}")
+        else:
+            print("外部审批能力：启用（运行时会预检并在权限不足时使用卡片兜底）")
 
     if args.skip_auth:
         print("lark-cli 认证：已跳过")

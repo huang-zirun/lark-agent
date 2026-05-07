@@ -15,7 +15,13 @@ from devflow.semantic.query import SemanticQueryEngine
 
 MAX_READ_SIZE = 10 * 1024 * 1024
 MAX_WRITE_SIZE = 10 * 1024 * 1024
-EXCLUDED_DIRECTORIES = {".git", ".venv", "node_modules", "__pycache__", "artifacts", ".test-tmp"}
+EXCLUDED_DIRECTORIES = {".git", ".devflow-index", ".venv", "node_modules", "__pycache__", "artifacts", ".test-tmp"}
+EXCLUDED_RUNTIME_FILE_PATTERNS = {
+    "trace.jsonl",
+    "*-llm-request-turn*.json",
+    "*-llm-response-turn*.json",
+}
+PROMPT_PREVIEW_CHARS = 500
 
 
 @dataclass(slots=True)
@@ -206,11 +212,152 @@ class CodeToolExecutor:
 
 
 def capture_git_diff(workspace_root: Path | str) -> str:
+    return str(capture_workspace_changes(workspace_root).get("diff") or "")
+
+
+def capture_workspace_changes(workspace_root: Path | str) -> dict[str, Any]:
     root = Path(workspace_root).expanduser().resolve()
-    if not (root / ".git").exists():
-        return ""
-    completed = subprocess.run(
-        ["git", "diff", "--no-ext-diff"],
+    result: dict[str, Any] = {
+        "diff": "",
+        "changed_files": [],
+        "untracked_files": [],
+        "excluded_files": [],
+    }
+    has_git = (root / ".git").exists()
+    diff_text = ""
+    changed_files: list[str] = []
+    if has_git:
+        completed = subprocess.run(
+            ["git", "diff", "--no-ext-diff"],
+            cwd=root,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        diff_text = (completed.stdout or "") if completed.returncode == 0 else ""
+        changed_files = _changed_files_from_diff(diff_text)
+
+    untracked_files: list[str] = []
+    synthetic_diffs: list[str] = []
+    excluded_files: list[str] = []
+    candidates = _git_untracked_files(root) if has_git else _workspace_text_file_candidates(root)
+    for rel in candidates:
+        rel_path = rel.replace("\\", "/").strip()
+        if not rel_path:
+            continue
+        path = (root / rel_path).resolve()
+        if _is_excluded_relative(rel_path):
+            excluded_files.append(rel_path)
+            continue
+        if not path.is_file() or not _is_text_file(path):
+            excluded_files.append(rel_path)
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            excluded_files.append(rel_path)
+            continue
+        untracked_files.append(rel_path)
+        synthetic_diffs.append(_unified_patch(rel_path, "", content))
+
+    all_changed = _unique_texts(changed_files, untracked_files)
+    combined_diff = diff_text
+    if synthetic_diffs:
+        combined_diff += ("\n" if combined_diff and not combined_diff.endswith("\n") else "")
+        combined_diff += "".join(synthetic_diffs)
+    result.update(
+        {
+            "diff": combined_diff,
+            "changed_files": all_changed,
+            "untracked_files": untracked_files,
+            "excluded_files": excluded_files,
+        }
+    )
+    return result
+
+
+def compact_tool_result(result: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    for key in ("status", "path", "operation", "returncode", "start_line", "line_count", "total_lines", "truncated", "error"):
+        if key in result:
+            compact[key] = result[key]
+    if "matches" in result and isinstance(result["matches"], list):
+        compact["match_count"] = len(result["matches"])
+        compact["matches"] = result["matches"][:20]
+    for key in ("content", "patch", "stdout", "stderr"):
+        value = result.get(key)
+        if isinstance(value, str):
+            compact[f"{key}_chars"] = len(value)
+            compact[f"{key}_preview"] = _compact_text(value)
+            if len(value) > PROMPT_PREVIEW_CHARS:
+                compact["truncated"] = True
+    for key, value in result.items():
+        if key not in compact and key not in {"content", "patch", "stdout", "stderr", "matches"}:
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                compact[key] = value
+    return compact
+
+
+def compact_tool_event(event: dict[str, Any]) -> dict[str, Any]:
+    payload = event.get("input") if isinstance(event.get("input"), dict) else {}
+    result = event.get("result") if isinstance(event.get("result"), dict) else {}
+    return {
+        "tool": event.get("tool"),
+        "input": compact_tool_input(payload),
+        "status": event.get("status"),
+        "result": compact_tool_result(result),
+    }
+
+
+def compact_tool_input(payload: dict[str, Any]) -> dict[str, Any]:
+    compact_input: dict[str, Any] = {}
+    for key, value in payload.items():
+        if isinstance(value, str) and len(value) > PROMPT_PREVIEW_CHARS:
+            compact_input[f"{key}_chars"] = len(value)
+            compact_input[f"{key}_preview"] = _compact_text(value)
+            compact_input["truncated"] = True
+        else:
+            compact_input[key] = value
+    return compact_input
+
+
+def compact_agent_action(action: dict[str, Any]) -> dict[str, Any]:
+    if action.get("action") != "tool":
+        return action
+    payload = action.get("input") if isinstance(action.get("input"), dict) else {}
+    return {
+        "action": "tool",
+        "tool": action.get("tool"),
+        "input": compact_tool_input(payload),
+    }
+
+
+def compact_tool_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [compact_tool_event(event) for event in events[-20:]]
+
+
+def _relative(path: Path, root: Path) -> str:
+    return path.relative_to(root).as_posix()
+
+
+def _unified_patch(path: str, original: str, updated: str) -> str:
+    body = "".join(
+        difflib.unified_diff(
+            original.splitlines(keepends=True),
+            updated.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+        )
+    )
+    return f"diff --git a/{path} b/{path}\n{body}"
+
+
+def _git_untracked_files(root: Path) -> list[str]:
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
         cwd=root,
         text=True,
         encoding="utf-8",
@@ -219,22 +366,22 @@ def capture_git_diff(workspace_root: Path | str) -> str:
         timeout=30,
         check=False,
     )
-    return (completed.stdout or "") if completed.returncode == 0 else ""
+    if untracked.returncode != 0:
+        return []
+    return [line for line in (untracked.stdout or "").splitlines() if line.strip()]
 
 
-def _relative(path: Path, root: Path) -> str:
-    return path.relative_to(root).as_posix()
-
-
-def _unified_patch(path: str, original: str, updated: str) -> str:
-    return "".join(
-        difflib.unified_diff(
-            original.splitlines(keepends=True),
-            updated.splitlines(keepends=True),
-            fromfile=f"a/{path}",
-            tofile=f"b/{path}",
-        )
-    )
+def _workspace_text_file_candidates(root: Path) -> list[str]:
+    candidates: list[str] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = _relative(path, root)
+        if _is_excluded_relative(rel):
+            continue
+        if _is_text_file(path):
+            candidates.append(rel)
+    return candidates
 
 
 def _redact(value: Any) -> Any:
@@ -242,3 +389,56 @@ def _redact(value: Any) -> Any:
     if len(text) <= 1000:
         return value
     return {"truncated": True, "preview": text[:1000]}
+
+
+def _is_excluded_relative(rel_path: str) -> bool:
+    parts = Path(rel_path).parts
+    if any(part in EXCLUDED_DIRECTORIES for part in parts):
+        return True
+    name = Path(rel_path).name
+    return any(fnmatch.fnmatch(name, pattern) for pattern in EXCLUDED_RUNTIME_FILE_PATTERNS)
+
+
+def _is_text_file(path: Path) -> bool:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return False
+    if len(data) > MAX_READ_SIZE:
+        return False
+    if b"\0" in data[:8192]:
+        return False
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def _changed_files_from_diff(diff_text: str) -> list[str]:
+    files: list[str] = []
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split()
+            if len(parts) >= 4:
+                files.append(parts[3].removeprefix("b/"))
+    return _unique_texts(files)
+
+
+def _unique_texts(*groups: list[str]) -> list[str]:
+    seen: set[str] = set()
+    values: list[str] = []
+    for group in groups:
+        for item in group:
+            text = str(item).strip().replace("\\", "/")
+            if text and text not in seen:
+                seen.add(text)
+                values.append(text)
+    return values
+
+
+def _compact_text(text: str) -> str:
+    normalized = text.replace("\r\n", "\n")
+    if len(normalized) <= PROMPT_PREVIEW_CHARS:
+        return normalized
+    return normalized[:PROMPT_PREVIEW_CHARS].rstrip() + "...[truncated]"

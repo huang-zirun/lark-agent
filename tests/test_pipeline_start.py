@@ -190,8 +190,6 @@ class PipelineStartTests(unittest.TestCase):
             result = process_bot_event(
                 bot_event("目标：构建一键启动\n用户：产品经理\n范围：CLI"),
                 out_dir=Path(temp_dir),
-                analyzer="heuristic",
-                model="test-model",
                 prd_creator=create_prd,
                 card_reply_sender=card_reply,
                 reply_sender=None,
@@ -200,11 +198,12 @@ class PipelineStartTests(unittest.TestCase):
             run_payload = json.loads(result.run_path.read_text(encoding="utf-8"))
             requirement_payload = json.loads(result.requirement_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(result.status, "success")
-        self.assertEqual(run_payload["status"], "success")
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(run_payload["status"], "blocked")
+        self.assertEqual(run_payload["lifecycle_status"], "blocked")
         self.assertEqual(run_payload["detected_input"]["kind"], "inline_text")
         self.assertEqual(run_payload["stages"][0]["status"], "success")
-        self.assertTrue(run_payload["stages"][1]["status"], "pending")
+        self.assertEqual(run_payload["stages"][1]["status"], "blocked")
         self.assertEqual(requirement_payload["schema_version"], "devflow.requirement.v1")
         self.assertEqual(cards[0][0], "om_evt")
         self.assertEqual(run_payload["publication"]["prd"]["document_id"], "docx_test")
@@ -226,8 +225,6 @@ class PipelineStartTests(unittest.TestCase):
             result = process_bot_event(
                 bot_event("https://example.feishu.cn/docx/doc_missing"),
                 out_dir=Path(temp_dir),
-                analyzer="heuristic",
-                model="test-model",
                 fetch_doc=fetch_doc,
                 reply_sender=reply,
             )
@@ -273,7 +270,7 @@ class PipelineStartTests(unittest.TestCase):
         self.assertEqual(len(run_dirs), 1)
         self.assertTrue(run_json_exists)
         self.assertTrue(requirement_json_exists)
-        self.assertIn("success", stdout.getvalue())
+        self.assertIn("blocked", stdout.getvalue())
         listen.assert_called_once_with(max_events=1, timeout_seconds=1)
 
     def test_send_bot_reply_uses_expected_lark_cli_command(self) -> None:
@@ -307,8 +304,7 @@ class PipelineStartTests(unittest.TestCase):
         fake_config = DevflowConfig(
             llm=LlmConfig(
                 provider="custom",
-                api_key="SECRET_VALUE",
-                model="test-model",
+                api_key="SECRET_VALUE", model="test-model",
                 base_url="https://example.test/v1",
             ),
             lark=LarkConfig(cli_version="1.0.23", app_id="", app_secret="", test_doc=""),
@@ -323,8 +319,6 @@ class PipelineStartTests(unittest.TestCase):
                     result = process_bot_event(
                         bot_event("Goal: add audit logging"),
                         out_dir=Path(temp_dir),
-                        analyzer="llm",
-                        model="unused-model",
                         reply_sender=None,
                     )
 
@@ -354,8 +348,6 @@ class PipelineStartTests(unittest.TestCase):
             result = process_bot_event(
                 bot_event("目标：构建一键启动\n用户：产品经理\n范围：CLI"),
                 out_dir=Path(temp_dir),
-                analyzer="heuristic",
-                model="test-model",
                 reply_sender=None,
             )
 
@@ -363,7 +355,9 @@ class PipelineStartTests(unittest.TestCase):
             trace_path = result.run_dir / "trace.jsonl"
             trace_text = trace_path.read_text(encoding="utf-8")
 
-        self.assertEqual(result.status, "success")
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(run_payload["status"], "blocked")
+        self.assertEqual(run_payload["lifecycle_status"], "blocked")
         self.assertEqual(run_payload["audit"]["trace_path"], str(trace_path))
         self.assertIsNone(run_payload["audit"].get("llm"))
         self.assertIn("analysis_completed", trace_text)
@@ -374,8 +368,7 @@ class PipelineStartTests(unittest.TestCase):
         fake_config = DevflowConfig(
             llm=LlmConfig(
                 provider="custom",
-                api_key="SECRET_VALUE",
-                model="test-model",
+                api_key="SECRET_VALUE", model="test-model",
                 base_url="https://example.test/v1",
             ),
             lark=LarkConfig(cli_version="1.0.23", app_id="", app_secret="", test_doc=""),
@@ -392,8 +385,6 @@ class PipelineStartTests(unittest.TestCase):
                     result = process_bot_event(
                         bot_event(f"目标：增加方案设计节点\n仓库：{Path.cwd()}"),
                         out_dir=Path(temp_dir),
-                        analyzer="llm",
-                        model="unused-model",
                         reply_sender=None,
                     )
 
@@ -402,7 +393,10 @@ class PipelineStartTests(unittest.TestCase):
             solution_payload = json.loads(solution_path.read_text(encoding="utf-8"))
             trace_text = (result.run_dir / "trace.jsonl").read_text(encoding="utf-8")
 
-        self.assertEqual(result.status, "success")
+        self.assertEqual(result.status, "waiting_approval")
+        self.assertEqual(run_payload["status"], "waiting_approval")
+        self.assertEqual(run_payload["lifecycle_status"], "waiting_approval")
+        self.assertIsNone(run_payload.get("ended_at"))
         self.assertEqual(run_payload["stages"][1]["status"], "success")
         self.assertEqual(run_payload["solution_artifact"], str(solution_path))
         self.assertEqual(run_payload["solution_markdown"], str(result.run_dir / "solution.md"))
@@ -421,8 +415,7 @@ class PipelineStartTests(unittest.TestCase):
         fake_config = DevflowConfig(
             llm=LlmConfig(
                 provider="custom",
-                api_key="SECRET_VALUE",
-                model="test-model",
+                api_key="SECRET_VALUE", model="test-model",
                 base_url="https://example.test/v1",
             ),
             lark=LarkConfig(cli_version="1.0.23", app_id="", app_secret="", test_doc=""),
@@ -445,15 +438,14 @@ class PipelineStartTests(unittest.TestCase):
                     result = process_bot_event(
                         bot_event(f"目标：增加方案评审\n仓库：{Path.cwd()}"),
                         out_dir=Path(temp_dir),
-                        analyzer="llm",
-                        model="unused-model",
                         reply_sender=reply_sender,
                         card_reply_sender=card_reply,
                     )
 
             run_payload = json.loads(result.run_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(result.status, "success")
+        self.assertEqual(result.status, "waiting_approval")
+        self.assertEqual(run_payload["status"], "waiting_approval")
         self.assertEqual(run_payload["checkpoint_publication"]["status"], "failed")
         self.assertIn("field validation failed", run_payload["reply_error"])
         self.assertEqual(replies[-1][0], "om_evt")
@@ -486,8 +478,6 @@ class PipelineStartTests(unittest.TestCase):
                 result = process_bot_event(
                     bot_event("目标：新增检查点"),
                     out_dir=Path(temp_dir),
-                    analyzer="llm",
-                    model="unused-model",
                     build_artifact=build_artifact,
                     prd_creator=lambda *_args: {"document_id": "docx_123", "url": None},
                     card_reply_sender=lambda *_args: None,
@@ -584,8 +574,6 @@ class PipelineStartTests(unittest.TestCase):
                     result = process_bot_event(
                         bot_event(f"仓库：{Path.cwd()}"),
                         out_dir=Path(temp_dir),
-                        analyzer="llm",
-                        model="unused-model",
                         reply_sender=reply_sender,
                         card_reply_sender=lambda *_args: None,
                     )
@@ -594,6 +582,11 @@ class PipelineStartTests(unittest.TestCase):
 
         self.assertEqual(result.status, "waiting_approval")
         self.assertIn("field validation failed", updated["reply_error"])
+        self.assertEqual(updated["status"], "waiting_approval")
+        self.assertEqual(updated["lifecycle_status"], "waiting_approval")
+        self.assertNotIn("checkpoint_blocked_reason", updated)
+        self.assertNotIn("error", updated["stages"][1])
+        self.assertEqual(updated["checkpoint_history"][0]["status"], "blocked")
 
     def test_approve_checkpoint_message_records_continue_request(self) -> None:
         replies = []
@@ -626,8 +619,6 @@ class PipelineStartTests(unittest.TestCase):
             result = process_bot_event(
                 bot_event(f"Approve {run_id}"),
                 out_dir=Path(temp_dir),
-                analyzer="llm",
-                model="unused-model",
                 reply_sender=reply_sender,
             )
             updated = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
@@ -712,13 +703,14 @@ class PipelineStartTests(unittest.TestCase):
                     result = process_bot_event(
                         bot_event(f"Approve {run_id}"),
                         out_dir=Path(temp_dir),
-                        analyzer="llm",
-                        model="unused-model",
                         reply_sender=reply_sender,
                     )
             updated = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
 
         self.assertEqual(result.status, "waiting_code_review")
+        self.assertEqual(updated["status"], "waiting_approval")
+        self.assertEqual(updated["lifecycle_status"], "waiting_approval")
+        self.assertIsNone(updated.get("ended_at"))
         self.assertEqual(updated["checkpoint_status"], "waiting_approval")
         self.assertEqual(updated["stages"][2]["status"], "success")
         self.assertEqual(updated["stages"][3]["status"], "success")
@@ -868,14 +860,14 @@ class PipelineStartTests(unittest.TestCase):
             result = process_bot_event(
                 bot_event(f"Approve {run_id}"),
                 out_dir=Path(temp_dir),
-                analyzer="llm",
-                model="unused-model",
                 reply_sender=reply_sender,
             )
             updated = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
 
         self.assertEqual(result.status, "delivered")
         self.assertEqual(updated["status"], "delivered")
+        self.assertEqual(updated["lifecycle_status"], "delivered")
+        self.assertIsNotNone(updated.get("ended_at"))
         self.assertEqual(updated["stages"][5]["status"], "success")
         self.assertTrue((run_dir / "delivery.json").exists())
         self.assertTrue((run_dir / "delivery.md").exists())
@@ -906,8 +898,6 @@ class PipelineStartTests(unittest.TestCase):
             result = process_bot_event(
                 bot_event(f"Reject {run_id}: not ready"),
                 out_dir=Path(temp_dir),
-                analyzer="llm",
-                model="unused-model",
                 reply_sender=None,
             )
             updated = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
@@ -1045,8 +1035,6 @@ class PipelineStartTests(unittest.TestCase):
             first = process_bot_event(
                 bot_event(f"Reject {run_id}"),
                 out_dir=Path(temp_dir),
-                analyzer="llm",
-                model="unused-model",
                 reply_sender=reply_sender,
             )
             responses = [FakeLlmResponse(llm_solution_payload())]
@@ -1055,8 +1043,6 @@ class PipelineStartTests(unittest.TestCase):
                     second = process_bot_event(
                         bot_event("请补充移动端触屏控制"),
                         out_dir=Path(temp_dir),
-                        analyzer="llm",
-                        model="unused-model",
                         reply_sender=reply_sender,
                         card_reply_sender=lambda *_args: None,
                     )
@@ -1081,8 +1067,6 @@ class PipelineStartTests(unittest.TestCase):
             result = process_bot_event(
                 bot_event("https://example.feishu.cn/docx/doc_missing"),
                 out_dir=Path(temp_dir),
-                analyzer="heuristic",
-                model="test-model",
                 fetch_doc=fetch_doc,
                 reply_sender=None,
             )

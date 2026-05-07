@@ -26,6 +26,7 @@
 | `ark` | 火山方舟 | `https://ark.cn-beijing.volces.com/api/v3` |
 | `bailian` | 阿里百炼 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 | `deepseek` | DeepSeek | `https://api.deepseek.com` |
+| `longcat` | LongCat | `https://api.longcat.chat/openai` |
 | `mimo` | MiMo | `https://api.xiaomimimo.com/v1` |
 | `openai` | OpenAI | `https://api.openai.com/v1` |
 | `custom` | 自定义 | 无（必须填写 `base_url`） |
@@ -36,6 +37,7 @@
 
 - **火山方舟**：登录 [火山方舟控制台](https://console.volcengine.com/ark)，创建推理接入点后获取 API Key
 - **DeepSeek**：登录 [DeepSeek 平台](https://platform.deepseek.com)，在 API Keys 页面创建
+- **LongCat**：登录 [LongCat 开放平台](https://longcat.chat/platform/)，注册后在 API Keys 页面获取
 - **OpenAI**：登录 [OpenAI 平台](https://platform.openai.com)，在 API Keys 页面创建
 - **阿里百炼**：登录 [百炼控制台](https://bailian.console.aliyun.com)，获取 API Key
 
@@ -47,6 +49,7 @@
 |---|---|---|
 | 火山方舟 | 推理接入点 ID | `ep-202xxxxx-xxxxx` |
 | DeepSeek | 模型名称 | `deepseek-chat` |
+| LongCat | 模型名称 | `longcat-chat` |
 | OpenAI | 模型名称 | `gpt-4o` |
 
 ### `base_url` — 何时需要

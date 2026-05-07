@@ -7,7 +7,13 @@ from typing import TYPE_CHECKING, Any
 
 from devflow.code.models import AGENT_NAME, AGENT_VERSION, SCHEMA_VERSION
 from devflow.code.prompt import CODE_GENERATION_SYSTEM_PROMPT, build_code_generation_user_prompt
-from devflow.code.tools import CodeToolExecutor, capture_git_diff
+from devflow.code.tools import (
+    CodeToolExecutor,
+    capture_workspace_changes,
+    compact_agent_action,
+    compact_tool_events,
+    compact_tool_result,
+)
 from devflow.config import LlmConfig
 from devflow.llm import LlmError, UrlOpen, base_url_host, chat_completion, parse_llm_json
 from devflow.solution.models import SCHEMA_VERSION as SOLUTION_SCHEMA_VERSION
@@ -72,9 +78,11 @@ def build_code_generation_artifact(
     ]
     finish: dict[str, Any] | None = None
     completions: list[dict[str, Any]] = []
+    reference_documents = _load_reference_docs_for_code()
 
     for turn in range(1, max_turns + 1):
-        messages.append({"role": "user", "content": build_code_generation_user_prompt(solution, executor.events, reference_documents=_load_reference_docs_for_code())})
+        prompt_reference_docs = reference_documents if turn == 1 else _reference_doc_summaries(reference_documents)
+        messages.append({"role": "user", "content": build_code_generation_user_prompt(solution, compact_tool_events(executor.events), reference_documents=prompt_reference_docs)})
         if stage_trace is not None:
             stage_trace.event("code_llm_started", status="running", payload={"turn": turn, "model": llm_config.model})
         completion = chat_completion(llm_config, messages, opener=opener)
@@ -101,19 +109,20 @@ def build_code_generation_artifact(
                 },
             )
         action = normalize_agent_action(parse_llm_json(completion.content))
-        messages.append({"role": "assistant", "content": json.dumps(action, ensure_ascii=False)})
+        messages.append({"role": "assistant", "content": json.dumps(compact_agent_action(action), ensure_ascii=False)})
         if action["action"] == "finish":
             finish = action
             break
         result = executor.execute(action["tool"], action["input"])
-        messages.append({"role": "user", "content": json.dumps({"tool_result": result}, ensure_ascii=False)})
+        messages.append({"role": "user", "content": json.dumps({"tool_result": compact_tool_result(result)}, ensure_ascii=False)})
         if stage_trace is not None:
             stage_trace.event("code_tool_completed", status="success", payload=executor.events[-1])
 
     if finish is None:
         raise LlmError("代码生成 agent 达到最大轮数但没有返回 finish。")
 
-    diff_text = capture_git_diff(workspace_root)
+    workspace_changes = capture_workspace_changes(workspace_root)
+    changed_files = _unique_text_list(finish.get("changed_files"), workspace_changes.get("changed_files"))
     return {
         "schema_version": SCHEMA_VERSION,
         "metadata": {
@@ -130,11 +139,12 @@ def build_code_generation_artifact(
             "title": (solution.get("requirement_summary") or {}).get("title", ""),
             "summary": (solution.get("proposed_solution") or {}).get("summary", ""),
         },
-        "changed_files": _text_list(finish.get("changed_files")),
+        "changed_files": changed_files,
         "summary": str(finish.get("summary") or "").strip(),
         "warnings": _text_list(finish.get("warnings")),
         "tool_events": executor.events,
-        "diff": diff_text,
+        "workspace_changes": workspace_changes,
+        "diff": workspace_changes.get("diff", ""),
         "prompt": {
             "system_prompt": CODE_GENERATION_SYSTEM_PROMPT,
             "turn_count": len(completions),
@@ -210,3 +220,27 @@ def _text_list(value: Any) -> list[str]:
         return [str(item).strip() for item in value if str(item).strip()]
     text = str(value).strip()
     return [text] if text else []
+
+
+def _unique_text_list(*values: Any) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        for item in _text_list(value):
+            normalized = item.replace("\\", "/")
+            if normalized not in seen:
+                seen.add(normalized)
+                result.append(normalized)
+    return result
+
+
+def _reference_doc_summaries(reference_documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": doc.get("name"),
+            "title": doc.get("title"),
+            "loaded": True,
+            "content_chars": len(str(doc.get("content") or "")),
+        }
+        for doc in reference_documents
+    ]

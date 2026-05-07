@@ -6,7 +6,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from devflow.config import LlmConfig, ReferenceConfig
-from devflow.llm import LlmError, UrlOpen, base_url_host, chat_completion, parse_llm_json
+from devflow.llm import (
+    LlmError,
+    UrlOpen,
+    base_url_host,
+    build_chat_completion_request_body,
+    chat_completion,
+    parse_llm_json,
+)
 from devflow.solution.models import AGENT_NAME, AGENT_VERSION, SCHEMA_VERSION
 from devflow.solution.prompt import SOLUTION_DESIGN_ARCHITECT_PROMPT
 from devflow.solution.workspace import build_codebase_context
@@ -134,18 +141,24 @@ def build_solution_design_artifact(
                 "max_tokens": llm_config.max_tokens,
             },
         )
-    try:
-        completion = chat_completion(llm_config, messages, opener=opener)
-    except LlmError:
-        if stage_trace is not None:
-            stage_trace.event("solution_llm_failed", status="failed")
-        raise
-
+    request_path: Path | None = None
+    request_body = build_chat_completion_request_body(llm_config, messages)
     if stage_trace is not None:
         request_path = stage_trace.write_json_artifact(
             "solution-llm-request.json",
-            completion.request_body,
+            request_body,
         )
+    try:
+        completion = chat_completion(llm_config, messages, opener=opener)
+    except LlmError as exc:
+        if stage_trace is not None:
+            payload = {"error": str(exc)}
+            if request_path is not None:
+                payload["request_path"] = str(request_path)
+            stage_trace.event("solution_llm_failed", status="failed", payload=payload)
+        raise
+
+    if stage_trace is not None:
         response_path = stage_trace.write_json_artifact(
             "solution-llm-response.json",
             completion.to_audit_payload(),

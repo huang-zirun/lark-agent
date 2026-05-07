@@ -4,6 +4,7 @@ import json
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 from devflow.checkpoint import (
@@ -357,13 +358,14 @@ class WaitingApprovalPromptTests(unittest.TestCase):
 
 
 class NoActiveRunNewRunTests(unittest.TestCase):
-    def test_no_session_creates_new_run_via_process_bot_event(self) -> None:
+    @patch("devflow.pipeline.maybe_run_solution_design", return_value=None)
+    def test_no_session_creates_new_run_via_process_bot_event(self, _mock_sol) -> None:
         out_dir = temp_out_dir()
         session = SessionManager()
 
         artifact = make_requirement_artifact(ready=True)
 
-        def build_artifact(_source, _analyzer, _model):
+        def build_artifact(_source):
             return artifact
 
         cards: list[dict] = []
@@ -374,8 +376,6 @@ class NoActiveRunNewRunTests(unittest.TestCase):
         result = process_bot_event(
             bot_event("目标：创建新功能\n用户：开发者\n范围：CLI"),
             out_dir=out_dir,
-            analyzer="heuristic",
-            model="test-model",
             build_artifact=build_artifact,
             card_reply_sender=card_sender,
             reply_sender=None,
@@ -454,7 +454,7 @@ class OriginalBugScenarioTests(unittest.TestCase):
             raw_content="贪吃蛇",
         )
 
-        def build_artifact(_source, _analyzer, _model):
+        def build_artifact(_source):
             return artifact
 
         cards: list[dict] = []
@@ -465,8 +465,6 @@ class OriginalBugScenarioTests(unittest.TestCase):
         first_result = process_bot_event(
             bot_event("贪吃蛇"),
             out_dir=out_dir,
-            analyzer="heuristic",
-            model="test-model",
             build_artifact=build_artifact,
             card_reply_sender=card_sender,
             reply_sender=None,
@@ -483,8 +481,6 @@ class OriginalBugScenarioTests(unittest.TestCase):
         second_result = process_bot_event(
             bot_event("春天主题", message_id="om_second"),
             out_dir=out_dir,
-            analyzer="heuristic",
-            model="test-model",
             build_artifact=build_artifact,
             card_reply_sender=card_sender,
             reply_sender=None,
@@ -570,7 +566,7 @@ class OriginalBugScenarioTests(unittest.TestCase):
             raw_content="贪吃蛇",
         )
 
-        def build_artifact(_source, _analyzer, _model):
+        def build_artifact(_source):
             return artifact
 
         cards: list[dict] = []
@@ -581,8 +577,6 @@ class OriginalBugScenarioTests(unittest.TestCase):
         first = process_bot_event(
             bot_event("贪吃蛇"),
             out_dir=out_dir,
-            analyzer="heuristic",
-            model="test-model",
             build_artifact=build_artifact,
             card_reply_sender=card_sender,
             reply_sender=None,
@@ -595,8 +589,6 @@ class OriginalBugScenarioTests(unittest.TestCase):
         second = process_bot_event(
             bot_event("春天主题", message_id="om_spring"),
             out_dir=out_dir,
-            analyzer="heuristic",
-            model="test-model",
             build_artifact=build_artifact,
             card_reply_sender=card_sender,
             reply_sender=None,
@@ -608,8 +600,6 @@ class OriginalBugScenarioTests(unittest.TestCase):
         third = process_bot_event(
             bot_event("美丽花花", message_id="om_flower"),
             out_dir=out_dir,
-            analyzer="heuristic",
-            model="test-model",
             build_artifact=build_artifact,
             card_reply_sender=card_sender,
             reply_sender=None,
@@ -621,8 +611,6 @@ class OriginalBugScenarioTests(unittest.TestCase):
         fourth = process_bot_event(
             bot_event("绿色草草", message_id="om_grass"),
             out_dir=out_dir,
-            analyzer="heuristic",
-            model="test-model",
             build_artifact=build_artifact,
             card_reply_sender=card_sender,
             reply_sender=None,

@@ -133,7 +133,12 @@ class LlmTests(unittest.TestCase):
         self.assertEqual(result.usage_source, "provider")
         self.assertEqual(result.raw_response["id"], "chatcmpl_123")
         self.assertIsInstance(result.duration_ms, int)
-        self.assertIn("started_at", result.to_audit_payload())
+        audit_payload = result.to_audit_payload()
+        self.assertIn("started_at", audit_payload)
+        self.assertEqual(audit_payload["provider"], "custom")
+        self.assertEqual(audit_payload["model"], "test-model")
+        self.assertEqual(audit_payload["base_url_host"], "example.test")
+        self.assertEqual(audit_payload["usage_source"], "provider")
 
     def test_chat_completion_marks_missing_usage_without_estimating(self) -> None:
         def opener(request, timeout: int):
@@ -270,7 +275,6 @@ class LlmTests(unittest.TestCase):
         with patch("devflow.intake.analyzer.chat_completion_content", side_effect=fake_chat):
             build_requirement_artifact(
                 source,
-                analyzer="llm",
                 llm_config=LlmConfig(
                     provider="custom",
                     api_key="test-api-key",
@@ -321,7 +325,6 @@ class LlmTests(unittest.TestCase):
         with patch("devflow.intake.analyzer.chat_completion_content", return_value=json.dumps(payload)):
             artifact = build_requirement_artifact(
                 source,
-                analyzer="llm",
                 llm_config=LlmConfig(
                     provider="custom",
                     api_key="test-api-key",

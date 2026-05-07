@@ -32,11 +32,14 @@ class LarkCliNotFound(LarkCliError):
 
 def _resolve_native_exe_from_cmd_shim(cmd_path: str) -> str | None:
     shim_dir = os.path.dirname(cmd_path)
-    exe_path = os.path.normpath(
-        os.path.join(shim_dir, "..", "@larksuite", "cli", "bin", "lark-cli.exe")
-    )
-    if os.path.isfile(exe_path):
-        return exe_path
+    candidates = [
+        os.path.join(shim_dir, "node_modules", "@larksuite", "cli", "bin", "lark-cli.exe"),
+        os.path.join(shim_dir, "..", "@larksuite", "cli", "bin", "lark-cli.exe"),
+    ]
+    for candidate in candidates:
+        exe_path = os.path.normpath(candidate)
+        if os.path.isfile(exe_path):
+            return exe_path
     return None
 
 
@@ -209,22 +212,43 @@ def listen_bot_sources(
     return sources
 
 
+def _deduplicated_events(
+    events: Iterable[dict[str, Any]],
+    seen_message_ids: set[str] | None = None,
+) -> Iterable[dict[str, Any]]:
+    """Yield events, skipping duplicates with the same message_id."""
+    if seen_message_ids is None:
+        seen_message_ids = set()
+    for event in events:
+        message_id = _extract_message_id(event)
+        if message_id is not None and message_id in seen_message_ids:
+            continue
+        if message_id is not None:
+            seen_message_ids.add(message_id)
+        yield event
+
+
 def listen_bot_events(
     max_events: int | None,
     timeout_seconds: int | None = 60,
     runner: Runner | None = None,
+    *,
+    seen_message_ids: set[str] | None = None,
 ) -> Iterable[dict[str, Any]]:
     command = bot_message_event_command(max_events=max_events, timeout_seconds=timeout_seconds)
     if runner is not None:
         timeout = timeout_seconds + 15 if timeout_seconds is not None else None
         payload = runner(command, timeout)
-        yield from _events_from_payload(payload)
+        yield from _deduplicated_events(_events_from_payload(payload), seen_message_ids)
         return
 
-    yield from iter_lark_cli_event_stream(
-        command,
-        max_events=max_events,
-        timeout_seconds=timeout_seconds,
+    yield from _deduplicated_events(
+        iter_lark_cli_event_stream(
+            command,
+            max_events=max_events,
+            timeout_seconds=timeout_seconds,
+        ),
+        seen_message_ids,
     )
 
 
@@ -263,13 +287,16 @@ def iter_lark_cli_event_stream(
     executable = find_lark_cli_executable()
     process = subprocess.Popen(
         [executable, *args],
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
+        errors="replace",
     )
     stdout_queue: queue.Queue[str | None] = queue.Queue()
     stderr_lines: list[str] = []
+    ready_event = threading.Event()
 
     def read_stdout() -> None:
         assert process.stdout is not None
@@ -282,7 +309,10 @@ def iter_lark_cli_event_stream(
     def read_stderr() -> None:
         assert process.stderr is not None
         for line in process.stderr:
-            stderr_lines.append(line.rstrip())
+            stripped = line.rstrip()
+            stderr_lines.append(stripped)
+            if f"[event] ready event_key={BOT_MESSAGE_EVENT_KEY}" in stripped:
+                ready_event.set()
 
     stdout_thread = threading.Thread(target=read_stdout, daemon=True)
     stderr_thread = threading.Thread(target=read_stderr, daemon=True)
@@ -293,6 +323,26 @@ def iter_lark_cli_event_stream(
     deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
     terminated_by_timeout = False
     try:
+        while not ready_event.is_set():
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                terminated_by_timeout = True
+                break
+            wait_timeout = 0.1 if remaining is None else min(0.1, remaining)
+            ready_event.wait(timeout=wait_timeout)
+            if ready_event.is_set():
+                break
+            if process.poll() is not None:
+                break
+
+        if not ready_event.is_set():
+            stderr_thread.join(timeout=1)
+            stderr = "\n".join(line for line in stderr_lines if line).strip()
+            raise LarkCliError(
+                "lark-cli event consume did not reach ready state"
+                f"{f': {stderr}' if stderr else '.'}"
+            )
+
         while max_events is None or seen_events < max_events:
             remaining = None if deadline is None else deadline - time.monotonic()
             if remaining is not None and remaining <= 0:
@@ -500,6 +550,17 @@ def _resolve_sender_id(raw: Any) -> Any:
             if isinstance(value, str) and value.strip():
                 return value
     return raw
+
+
+def _extract_message_id(event: dict[str, Any]) -> str | None:
+    """Extract the message_id from an event dict for deduplication."""
+    body = _dict(event.get("event")) or event
+    message = _dict(body.get("message"))
+    return (
+        _string(body.get("message_id"))
+        or _string(message.get("message_id"))
+        or _string(body.get("open_message_id"))
+    )
 
 
 def event_to_source(event: dict[str, Any], fallback_index: int = 1) -> RequirementSource:

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" type="image/svg+xml" href="/dashboard/favicon.svg">
+  <title>DevFlow Observatory</title>
+  <link rel="stylesheet" href="/dashboard/assets/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header id="header">
+      <div class="header-left">
+        <h1>DevFlow<span class="accent">Monitor</span></h1>
+        <svg class="icon-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      </div>
+      <div class="header-center">
+        <span id="header-run-id" class="mono-xs"></span>
+      </div>
+      <div class="header-right">
+        <button id="btn-refresh" class="btn-ghost" title="刷新">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
+        <span class="live-badge">
+          <span class="ping-dot"></span>
+          <span class="static-dot"></span>
+          实时监控
+        </span>
+      </div>
+    </header>
+
+    <!-- Main layout -->
+    <div id="main-layout">
+      <!-- Sidebar -->
+      <aside id="sidebar">
+        <div class="sidebar-header">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+          <span>Pipeline 运行</span>
+        </div>
+        <div id="sidebar-list" class="sidebar-scroll"></div>
+      </aside>
+
+      <!-- Center content -->
+      <main id="center-panel">
+        <!-- Pipeline stepper -->
+        <div id="pipeline-stepper"></div>
+        <!-- Stage detail cards -->
+        <div id="stage-cards"></div>
+      </main>
+
+      <!-- Right panel -->
+      <aside id="right-panel">
+        <div id="right-content"></div>
+      </aside>
+    </div>
+  </div>
+
+  <script src="/dashboard/assets/app.js"></script>
+</body>
+</html>

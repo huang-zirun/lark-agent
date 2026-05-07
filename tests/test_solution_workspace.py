@@ -53,6 +53,7 @@ class SolutionWorkspaceTests(unittest.TestCase):
             self.assertTrue(Path(workspace["path"]).exists())
             self.assertTrue((Path(workspace["path"]) / ".git").exists())
             self.assertTrue(Path(workspace["path"]).is_relative_to(root.resolve()))
+            self.assertEqual(workspace["base_branch"], "main")
 
     def test_existing_path_outside_workspace_root_is_rejected(self) -> None:
         with temp_dir() as directory:

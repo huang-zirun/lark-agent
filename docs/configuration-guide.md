@@ -14,7 +14,7 @@
 
 | 项目 | 要求 |
 |---|---|
-| 用途 | lark-cli 安装 + 前端仪表板 |
+| 用途 | lark-cli 安装 |
 | 安装 lark-cli | `npm.cmd install -g @larksuite/cli@1.0.23` |
 | 安装 Skills | `npx.cmd skills add larksuite/cli -y -g` |
 
@@ -98,12 +98,9 @@ uv venv
 uv pip install -e .
 ```
 
-### 3.2 前端依赖
+### 3.2 前端仪表板
 
-```powershell
-cd dashboard
-npm install
-```
+仪表板为纯 Vanilla HTML/JS/CSS 实现，零构建、零依赖安装。启动 API 服务后访问 `http://127.0.0.1:8080/dashboard` 即可。
 
 ## 四、启动服务
 
@@ -117,12 +114,9 @@ uv run python -m devflow
 python -m devflow
 ```
 
-### 4.2 启动前端仪表板
+### 4.2 访问仪表板
 
-```powershell
-cd dashboard
-npm run dev
-```
+启动 API 服务后，直接访问 `http://127.0.0.1:8080/dashboard`。仪表板为 Vanilla HTML/JS/CSS 实现，无需单独启动前端开发服务器。
 
 ### 4.3 启动完整服务（推荐）
 
@@ -178,8 +172,7 @@ uv pip sync uv.lock
 - 确认应用具有所需的权限范围
 
 ### 6.4 其他
-- dashboard 目录下没有 node_modules 文件夹 ，所以 vite 命令找不到：在 dashboard 目录安装依赖或者从项目根目录：npm install --prefix dashboard
-- cross-env 命令未找到：npm install
+- cross-env 命令未找到：在项目根目录运行 `npm install`
 
 ## 七、相关文档
 

@@ -40,13 +40,18 @@ def build_requirement_artifact(
     llm_config: LlmConfig | None = None,
     stage_trace: "StageTrace | None" = None,
 ) -> dict[str, Any]:
+    if llm_config is not None and analyzer == "heuristic":
+        analyzer = "llm"
     if analyzer == "llm":
         if llm_config is None:
             raise LlmError("LLM 分析器需要已加载的 llm 配置。")
         return build_llm_requirement_artifact(source, llm_config, stage_trace=stage_trace)
     if analyzer != "heuristic":
         raise ValueError(f"不支持的 analyzer：{analyzer}。")
+    return build_heuristic_requirement_artifact(source, model=model)
 
+
+def build_heuristic_requirement_artifact(source: RequirementSource, *, model: str = "heuristic-local-v1") -> dict[str, Any]:
     source.ensure_content()
     content = normalize_text(source.content)
     title = source.title or infer_title(content)
@@ -356,6 +361,25 @@ def normalize_text(text: str) -> str:
     return normalized.strip()
 
 
+def _extract_labeled_value(content: str, labels: tuple[str, ...]) -> str:
+    values = _extract_labeled_values(content, labels)
+    return values[0] if values else ""
+
+
+def _extract_labeled_values(content: str, labels: tuple[str, ...]) -> list[str]:
+    values: list[str] = []
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    pattern = re.compile(rf"^\s*(?:{label_pattern})\s*[:：]\s*(.+?)\s*$", re.IGNORECASE)
+    for line in content.splitlines():
+        match = pattern.match(line.strip())
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if value:
+            values.append(value)
+    return values
+
+
 def infer_title(content: str) -> str:
     for line in content.splitlines():
         stripped = line.strip()
@@ -365,7 +389,6 @@ def infer_title(content: str) -> str:
             stripped = stripped.lstrip("#").strip()
         return stripped[:120]
     return "未命名需求"
-
 
 def extract_product_fields(content: str) -> dict[str, list[str]]:
     lines = meaningful_lines(content)
@@ -642,7 +665,6 @@ def _score(value: Any) -> float:
         except ValueError:
             return 0.0
     return 0.0
-
 
 def build_quality(
     extracted: dict[str, list[str]],

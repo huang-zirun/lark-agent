@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from devflow.cli import main
 from devflow.config import LlmConfig
-from devflow.test.agent import build_test_generation_artifact, write_test_diff, write_test_generation_artifact
+from devflow.test.agent import assess_test_validity, build_test_generation_artifact, write_test_diff, write_test_generation_artifact
 from devflow.test.runners import detect_test_stack
 from devflow.trace import RunTrace
 
@@ -139,6 +139,58 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(stack["framework"], "maven")
             self.assertEqual(stack["commands"][0]["command"], "mvn test")
 
+    def test_detects_plain_html_workspace_as_javascript(self) -> None:
+        with temp_workspace() as workspace:
+            (workspace / "index.html").write_text("<script src=\"game.js\"></script>\n", encoding="utf-8")
+
+            stack = detect_test_stack(workspace)
+
+        self.assertEqual(stack["language"], "javascript")
+        self.assertEqual(stack["framework"], "html-js")
+        self.assertIn("commands", stack)
+
+    def test_test_validity_rejects_copied_logic_without_production_reference(self) -> None:
+        with temp_workspace() as workspace:
+            (workspace / "index.html").write_text("<script>function moveSnake() { return true; }</script>\n", encoding="utf-8")
+            test_path = workspace / "test" / "game.test.js"
+            test_path.parent.mkdir()
+            test_path.write_text(
+                "// 从 index.html 提取的核心函数（为测试目的复制）\n"
+                "function moveSnake() { return true; }\n"
+                "require('assert').equal(moveSnake(), true);\n",
+                encoding="utf-8",
+            )
+
+            validity = assess_test_validity(
+                workspace,
+                generated_tests=["test/game.test.js"],
+                production_paths=["index.html"],
+            )
+
+        self.assertFalse(validity["proves_production_code"])
+        self.assertIn("test/game.test.js", validity["generated_tests"])
+        self.assertTrue(any("复制" in reason or "copy" in reason.lower() for reason in validity["reasons"]))
+
+    def test_test_validity_accepts_import_or_html_execution_reference(self) -> None:
+        with temp_workspace() as workspace:
+            (workspace / "game.js").write_text("export function moveSnake() { return true; }\n", encoding="utf-8")
+            test_path = workspace / "test" / "game.test.js"
+            test_path.parent.mkdir()
+            test_path.write_text(
+                "const { moveSnake } = require('../game.js');\n"
+                "require('assert').equal(moveSnake(), true);\n",
+                encoding="utf-8",
+            )
+
+            validity = assess_test_validity(
+                workspace,
+                generated_tests=["test/game.test.js"],
+                production_paths=["game.js"],
+            )
+
+        self.assertTrue(validity["proves_production_code"])
+        self.assertEqual(validity["production_paths"], ["game.js"])
+
     def test_test_generation_agent_writes_tests_runs_command_and_returns_artifact(self) -> None:
         responses = [
             FakeLlmResponse(
@@ -189,6 +241,7 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(artifact["status"], "success")
             self.assertEqual(artifact["generated_tests"], ["tests/test_calculator.py"])
             self.assertEqual(artifact["test_commands"][0]["returncode"], 0)
+            self.assertTrue(artifact["test_validity"]["proves_production_code"])
             self.assertTrue((workspace / "tests" / "test_calculator.py").exists())
             self.assertTrue((workspace / "test-llm-request-turn1.json").exists())
             self.assertTrue((workspace / "test-llm-response-turn1.json").exists())

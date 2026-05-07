@@ -5,6 +5,8 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 
+from unittest.mock import patch
+
 from devflow.intake.lark_cli import create_prd_document, publish_document, send_bot_card_reply
 from devflow.checkpoint import build_solution_review_card, build_code_review_card
 from devflow.pipeline import process_bot_event
@@ -184,7 +186,8 @@ class PrdPublishTests(unittest.TestCase):
                     if line.startswith("- "):
                         self.fail(f"lark_md content uses unsupported '- ' list syntax: {line!r}")
 
-    def test_process_success_creates_prd_and_replies_with_preview_card(self) -> None:
+    @patch("devflow.pipeline.maybe_run_solution_design", return_value=None)
+    def test_process_success_creates_prd_and_replies_with_preview_card(self, _mock_sol) -> None:
         created = []
         cards = []
 
@@ -202,8 +205,6 @@ class PrdPublishTests(unittest.TestCase):
             result = process_bot_event(
                 bot_event("目标：智能工单分流"),
                 out_dir=Path(temp_dir),
-                analyzer="heuristic",
-                model="test-model",
                 build_artifact=build_artifact,
                 prd_creator=create_prd,
                 card_reply_sender=card_reply,
@@ -223,7 +224,8 @@ class PrdPublishTests(unittest.TestCase):
         self.assertEqual(run_payload["artifact_publications"]["requirement_intake"]["document_id"], "docx_123")
         self.assertEqual(run_payload["publication"]["card_reply"]["status"], "success")
 
-    def test_process_prd_publish_failure_keeps_analysis_success(self) -> None:
+    @patch("devflow.pipeline.maybe_run_solution_design", return_value=None)
+    def test_process_prd_publish_failure_keeps_analysis_success(self, _mock_sol) -> None:
         def build_artifact(*_args):
             return requirement_artifact()
 
@@ -234,8 +236,6 @@ class PrdPublishTests(unittest.TestCase):
             result = process_bot_event(
                 bot_event("目标：智能工单分流"),
                 out_dir=Path(temp_dir),
-                analyzer="heuristic",
-                model="test-model",
                 build_artifact=build_artifact,
                 prd_creator=create_prd,
                 card_reply_sender=None,
@@ -249,7 +249,8 @@ class PrdPublishTests(unittest.TestCase):
         self.assertEqual(run_payload["artifact_publications"]["requirement_intake"]["status"], "failed")
         self.assertIn("create doc failed", run_payload["publication"]["error"])
 
-    def test_process_card_reply_failure_records_reply_error(self) -> None:
+    @patch("devflow.pipeline.maybe_run_solution_design", return_value=None)
+    def test_process_card_reply_failure_records_reply_error(self, _mock_sol) -> None:
         def build_artifact(*_args):
             return requirement_artifact()
 
@@ -263,8 +264,6 @@ class PrdPublishTests(unittest.TestCase):
             result = process_bot_event(
                 bot_event("目标：智能工单分流"),
                 out_dir=Path(temp_dir),
-                analyzer="heuristic",
-                model="test-model",
                 build_artifact=build_artifact,
                 prd_creator=create_prd,
                 card_reply_sender=card_reply,
@@ -277,7 +276,8 @@ class PrdPublishTests(unittest.TestCase):
         self.assertEqual(run_payload["reply_error"], "card reply failed")
         self.assertEqual(run_payload["publication"]["status"], "failed")
 
-    def test_process_card_reply_failure_sends_text_fallback(self) -> None:
+    @patch("devflow.pipeline.maybe_run_solution_design", return_value=None)
+    def test_process_card_reply_failure_sends_text_fallback(self, _mock_sol) -> None:
         replies = []
 
         def build_artifact(*_args):
@@ -296,8 +296,6 @@ class PrdPublishTests(unittest.TestCase):
             result = process_bot_event(
                 bot_event("目标：智能工单分流"),
                 out_dir=Path(temp_dir),
-                analyzer="heuristic",
-                model="test-model",
                 build_artifact=build_artifact,
                 prd_creator=create_prd,
                 card_reply_sender=card_reply,
@@ -307,7 +305,8 @@ class PrdPublishTests(unittest.TestCase):
         self.assertEqual(result.status, "success")
         self.assertEqual(replies[-1][0], "om_evt")
         self.assertIn("DevFlow 流水线已完成", replies[-1][1])
-        self.assertIn("PRD 发布：失败", replies[-1][1])
+        self.assertIn("PRD 发布：已完成", replies[-1][1])
+        self.assertIn("PRD 文档 ID：docx_123", replies[-1][1])
         self.assertTrue(replies[-1][2].startswith("df-"))
 
 
@@ -524,7 +523,7 @@ class SolutionReviewCardDocUrlTests(unittest.TestCase):
         )
 
         first_element = card["elements"][0]
-        self.assertIn("发布失败", first_element["text"]["content"])
+        self.assertIn("暂未返回分享链接", first_element["text"]["content"])
         self.assertIn("solution.md", first_element["text"]["content"])
 
     def test_solution_review_card_preview_up_to_10_files(self) -> None:
@@ -580,7 +579,7 @@ class CodeReviewCardDocUrlTests(unittest.TestCase):
         )
 
         first_element = card["elements"][0]
-        self.assertIn("发布失败", first_element["text"]["content"])
+        self.assertIn("暂未返回分享链接", first_element["text"]["content"])
         self.assertIn("review.md", first_element["text"]["content"])
 
     def test_code_review_card_preview_up_to_10_findings(self) -> None:

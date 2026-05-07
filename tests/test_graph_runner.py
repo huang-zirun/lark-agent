@@ -39,8 +39,8 @@ class GraphRunnerTests(unittest.TestCase):
                 "ended_at": None,
                 "trigger": {"source_type": "api"},
                 "detected_input": {"kind": "inline_text", "value": "实现一个登录页"},
-                "analyzer": "heuristic",
-                "model": "heuristic-local-v1",
+                
+                
                 "stages": initial_stages(),
                 "error": None,
                 "publication": {"status": "pending"},
@@ -60,7 +60,7 @@ class GraphRunnerTests(unittest.TestCase):
     def test_provider_override_is_applied_to_llm_requirement_intake(self) -> None:
         seen_providers: list[str] = []
 
-        def fake_build_artifact(source, *, analyzer, model=None, llm_config=None, stage_trace=None):
+        def fake_build_artifact(source, *, llm_config=None, stage_trace=None):
             seen_providers.append(llm_config.provider)
             return {
                 "schema_version": "devflow.requirement.v1",
@@ -90,8 +90,8 @@ class GraphRunnerTests(unittest.TestCase):
                 "ended_at": None,
                 "trigger": {"source_type": "api"},
                 "detected_input": {"kind": "inline_text", "value": "实现 API"},
-                "analyzer": "llm",
-                "model": "heuristic-local-v1",
+                
+                
                 "provider_override": "deepseek",
                 "stages": initial_stages(),
                 "error": None,
