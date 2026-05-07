@@ -36,6 +36,8 @@ For any new project, planning-focused request, or sufficiently complex task, sta
 
 The current deliverable is a Python CLI and REST minimal DevFlow runtime. It includes six real nodes, `requirement-intake-agent`, `solution-design-agent`, `code-generation-agent`, `test-generation-agent`, `code-review-agent`, and `delivery-agent`, with a LangGraph-backed runner used for API-triggered runs and checkpoint continuation. `devflow start` remains the one-command bot-driven entrypoint that creates a minimal pipeline run for each incoming requirement message, asks for human approval after technical solution design, generates workspace-scoped code changes after approval, generates/runs tests, reviews the change, pauses on the second human checkpoint for code review confirmation, and then produces a final delivery package.
 
+For the runnable-program contest deliverable, the lowest-risk default path is API + Dashboard first (`devflow serve`), with Feishu Bot startup treated as an enhanced integration path. This keeps the base program demonstrable without requiring lark-cli login state, while the full real Pipeline still requires configured LLM credentials and a resolvable workspace.
+
 ## Scope
 
 - In scope: bounded reads from Feishu document URLs/tokens, specific IM messages, bounded bot event consumption, and continuous bot-driven startup through `lark-cli`.
